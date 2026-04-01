@@ -25,7 +25,7 @@ interface PatchDetail {
   changes: ModChange[];
 }
 
-const NEXUS_API_KEY = "XhZR9gydHEl2YlH5NbA1vjHqUCjVgtAZDmi4+xosuVjRlI471A==--iLiSylNzElMiTJiE--o2p8F2r38/t09lYtuUDmhQ==";
+const NEXUS_API_KEY = "";
 
 const DEFAULT_CONFIG: AppConfig = {
   gamePath: "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Crimson Desert",
@@ -34,7 +34,7 @@ const DEFAULT_CONFIG: AppConfig = {
   activeAsiMods: [],
   activeLangMod: null,
   selectedLanguage: "english",
-  nexusApiKey: "XhZR9gydHEl2YlH5NbA1vjHqUCjVgtAZDmi4+xosuVjRlI471A==--iLiSylNzElMiTJiE--o2p8F2r38/t09lYtuUDmhQ==",
+  nexusApiKey: "",
 };
 
 export default function App() {
@@ -133,7 +133,7 @@ export default function App() {
       try {
         appDir = await invoke<string>("get_app_dir");
       } catch {
-        appDir = "C:\\Users\\corin\\Desktop\\Definitive Mod Manager";
+        appDir = ".";
       }
       const myConfigPath = appDir + "\\config.json";
       const myModsPath = appDir + "\\mods";

@@ -2,7 +2,7 @@
 name = "definitive-mod-manager"
 version = "1.0.0"
 description = "Definitive Mod Manager for Crimson Desert"
-authors = ["corin"]
+authors = ["Definitive Mod Manager"]
 license = "MIT"
 edition = "2021"
 rust-version = "1.77.2"
