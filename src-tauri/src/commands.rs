@@ -1,0 +1,3572 @@
+use serde::{Deserialize, Serialize};
+use sha2::{Sha256, Digest};
+use std::collections::HashMap;
+use std::fs;
+use std::io::Read as IoRead;
+use std::path::Path;
+use std::process::Command;
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ModChange {
+    pub offset: u64,
+    pub label: String,
+    pub original: String,
+    pub patched: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ModPatch {
+    pub game_file: String,
+    pub changes: Vec<ModChange>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ModInfo {
+    pub title: Option<String>,
+    pub name: Option<String>,
+    pub version: Option<String>,
+    pub description: Option<String>,
+    pub author: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ModFile {
+    #[serde(flatten)]
+    pub info: ModInfo,
+    pub modinfo: Option<ModInfo>,
+    pub patches: Vec<ModPatch>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ActiveMod {
+    #[serde(rename = "fileName")]
+    pub file_name: String,
+    #[serde(rename = "disabledIndices")]
+    pub disabled_indices: Vec<usize>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AppConfig {
+    #[serde(rename = "gamePath")]
+    pub game_path: String,
+    #[serde(rename = "modsPath")]
+    pub mods_path: String,
+    #[serde(rename = "activeMods")]
+    pub active_mods: Vec<ActiveMod>,
+    #[serde(rename = "activeAsiMods")]
+    pub active_asi_mods: Vec<String>,
+    #[serde(rename = "activeLangMod", default, skip_serializing_if = "Option::is_none")]
+    pub active_lang_mod: Option<String>,
+    #[serde(rename = "selectedLanguage", default = "default_language")]
+    pub selected_language: String,
+    #[serde(rename = "nexusApiKey", default)]
+    pub nexus_api_key: String,
+}
+
+fn default_language() -> String {
+    "english".to_string()
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ModEntry {
+    pub file_name: String,
+    pub title: String,
+    pub version: String,
+    pub author: String,
+    pub description: String,
+    pub enabled: bool,
+    pub patch_count: usize,
+    pub game_files: Vec<String>,
+    pub has_conflicts: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ConflictInfo {
+    pub offset: u64,
+    pub game_file: String,
+    pub mods: Vec<String>,
+    pub labels: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApplyResult {
+    pub success: bool,
+    pub applied: Vec<String>,
+    pub errors: Vec<String>,
+    pub backup_created: bool,
+}
+
+fn parse_mod_file(path: &Path) -> Result<ModFile, String> {
+    let content = fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+    serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse {}: {}", path.display(), e))
+}
+
+fn get_mod_display_info(m: &ModFile) -> (String, String, String, String) {
+    let info = m.modinfo.as_ref();
+    let title = info.and_then(|i| i.title.clone())
+        .or_else(|| m.info.title.clone())
+        .or_else(|| m.info.name.clone())
+        .unwrap_or_else(|| "Unknown".to_string());
+    let version = info.and_then(|i| i.version.clone())
+        .or_else(|| m.info.version.clone())
+        .unwrap_or_else(|| "?".to_string());
+    let author = info.and_then(|i| i.author.clone())
+        .or_else(|| m.info.author.clone())
+        .unwrap_or_else(|| "Unknown".to_string());
+    let description = info.and_then(|i| i.description.clone())
+        .or_else(|| m.info.description.clone())
+        .unwrap_or_default();
+    (title, version, author, description)
+}
+
+#[tauri::command]
+pub fn load_config(config_path: String) -> Result<AppConfig, String> {
+    let content = fs::read_to_string(&config_path)
+        .map_err(|e| format!("Failed to read config: {}", e))?;
+    serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse config: {}", e))
+}
+
+#[tauri::command]
+pub fn save_config(config_path: String, config: AppConfig) -> Result<(), String> {
+    let content = serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    fs::write(&config_path, content)
+        .map_err(|e| format!("Failed to write config: {}", e))
+}
+
+#[tauri::command]
+pub fn scan_mods(mods_path: String, active_mods: Vec<ActiveMod>) -> Result<Vec<ModEntry>, String> {
+    let mods_dir = Path::new(&mods_path);
+    if !mods_dir.exists() {
+        return Err("Mods directory does not exist".to_string());
+    }
+
+    let active_names: Vec<&str> = active_mods.iter().map(|m| m.file_name.as_str()).collect();
+    let mut entries = Vec::new();
+
+    let read_dir = fs::read_dir(mods_dir)
+        .map_err(|e| format!("Failed to read mods directory: {}", e))?;
+
+    for entry in read_dir {
+        let entry = entry.map_err(|e| format!("Dir entry error: {}", e))?;
+        let path = entry.path();
+
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+
+        let file_name = path.file_name().unwrap().to_string_lossy().to_string();
+
+        match parse_mod_file(&path) {
+            Ok(mod_file) => {
+                let (title, version, author, description) = get_mod_display_info(&mod_file);
+                let patch_count: usize = mod_file.patches.iter()
+                    .map(|p| p.changes.len())
+                    .sum();
+                let game_files: Vec<String> = mod_file.patches.iter()
+                    .map(|p| p.game_file.clone())
+                    .collect();
+                let enabled = active_names.contains(&file_name.as_str());
+
+                entries.push(ModEntry {
+                    file_name,
+                    title,
+                    version,
+                    author,
+                    description,
+                    enabled,
+                    patch_count,
+                    game_files,
+                    has_conflicts: false,
+                });
+            }
+            Err(e) => {
+                log::warn!("Skipping {}: {}", file_name, e);
+            }
+        }
+    }
+
+    entries.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+    Ok(entries)
+}
+
+#[tauri::command]
+pub fn get_mod_details(mods_path: String, file_name: String) -> Result<ModFile, String> {
+    let path = Path::new(&mods_path).join(&file_name);
+    parse_mod_file(&path)
+}
+
+#[tauri::command]
+pub fn check_conflicts(mods_path: String, active_mods: Vec<String>) -> Result<Vec<ConflictInfo>, String> {
+    let mods_dir = Path::new(&mods_path);
+    let mut offset_map: HashMap<(String, u64), Vec<(String, String)>> = HashMap::new();
+
+    for file_name in &active_mods {
+        let path = mods_dir.join(file_name);
+        if let Ok(mod_file) = parse_mod_file(&path) {
+            let (title, _, _, _) = get_mod_display_info(&mod_file);
+            for patch in &mod_file.patches {
+                for change in &patch.changes {
+                    let key = (patch.game_file.clone(), change.offset);
+                    offset_map.entry(key)
+                        .or_default()
+                        .push((title.clone(), change.label.clone()));
+                }
+            }
+        }
+    }
+
+    let conflicts: Vec<ConflictInfo> = offset_map.into_iter()
+        .filter(|(_, mods)| mods.len() > 1)
+        .map(|((game_file, offset), mods)| {
+            ConflictInfo {
+                offset,
+                game_file,
+                mods: mods.iter().map(|(name, _)| name.clone()).collect(),
+                labels: mods.iter().map(|(_, label)| label.clone()).collect(),
+            }
+        })
+        .collect();
+
+    Ok(conflicts)
+}
+
+#[tauri::command]
+pub fn validate_game_path(game_path: String) -> Result<bool, String> {
+    let path = Path::new(&game_path);
+    let exe = path.join("bin64").join("CrimsonDesert.exe");
+    Ok(path.exists() && exe.exists())
+}
+
+#[tauri::command]
+pub fn create_backup(game_path: String, game_file: String, backup_dir: String) -> Result<String, String> {
+    let source = Path::new(&game_path).join(&game_file);
+    let backup_path = Path::new(&backup_dir);
+
+    if !backup_path.exists() {
+        fs::create_dir_all(backup_path)
+            .map_err(|e| format!("Failed to create backup directory: {}", e))?;
+    }
+
+    let backup_name = game_file.replace('/', "_").replace('\\', "_") + ".original";
+    let dest = backup_path.join(&backup_name);
+
+    if !dest.exists() {
+        fs::copy(&source, &dest)
+            .map_err(|e| format!("Failed to create backup: {}", e))?;
+    }
+
+    Ok(dest.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn restore_backup(game_path: String, game_file: String, backup_dir: String) -> Result<(), String> {
+    let backup_name = game_file.replace('/', "_").replace('\\', "_") + ".original";
+    let backup = Path::new(&backup_dir).join(&backup_name);
+    let target = Path::new(&game_path).join(&game_file);
+
+    if !backup.exists() {
+        return Err(format!("No backup found for {}", game_file));
+    }
+
+    fs::copy(&backup, &target)
+        .map_err(|e| format!("Failed to restore backup: {}", e))?;
+
+    Ok(())
+}
+
+// =============================================================================
+// hashlittle — Bob Jenkins hashlittle hash for PAPGT and PAMT checksums
+// =============================================================================
+
+const INTEGRITY_SEED: u32 = 0xC5EDE; // 810718
+
+fn hashlittle(data: &[u8], initval: u32) -> u32 {
+    let length = data.len();
+    if length == 0 {
+        return 0;
+    }
+
+    let init = 0xDEADBEEFu32.wrapping_add(length as u32).wrapping_add(initval);
+    let mut a = init;
+    let mut b = init;
+    let mut c = init;
+
+    let mut offset = 0;
+    let mut remaining = length;
+
+    while remaining > 12 {
+        a = a.wrapping_add(u32::from_le_bytes(data[offset..offset+4].try_into().unwrap()));
+        b = b.wrapping_add(u32::from_le_bytes(data[offset+4..offset+8].try_into().unwrap()));
+        c = c.wrapping_add(u32::from_le_bytes(data[offset+8..offset+12].try_into().unwrap()));
+
+        a = a.wrapping_sub(c); a ^= c.rotate_left(4);  c = c.wrapping_add(b);
+        b = b.wrapping_sub(a); b ^= a.rotate_left(6);  a = a.wrapping_add(c);
+        c = c.wrapping_sub(b); c ^= b.rotate_left(8);  b = b.wrapping_add(a);
+        a = a.wrapping_sub(c); a ^= c.rotate_left(16); c = c.wrapping_add(b);
+        b = b.wrapping_sub(a); b ^= a.rotate_left(19); a = a.wrapping_add(c);
+        c = c.wrapping_sub(b); c ^= b.rotate_left(4);  b = b.wrapping_add(a);
+
+        offset += 12;
+        remaining -= 12;
+    }
+
+    // Handle remaining bytes (byte-by-byte, little-endian placement)
+    let tail = &data[offset..];
+    if remaining >= 1  { a = a.wrapping_add(tail[0] as u32); }
+    if remaining >= 2  { a = a.wrapping_add((tail[1] as u32) << 8); }
+    if remaining >= 3  { a = a.wrapping_add((tail[2] as u32) << 16); }
+    if remaining >= 4  { a = a.wrapping_add((tail[3] as u32) << 24); }
+    if remaining >= 5  { b = b.wrapping_add(tail[4] as u32); }
+    if remaining >= 6  { b = b.wrapping_add((tail[5] as u32) << 8); }
+    if remaining >= 7  { b = b.wrapping_add((tail[6] as u32) << 16); }
+    if remaining >= 8  { b = b.wrapping_add((tail[7] as u32) << 24); }
+    if remaining >= 9  { c = c.wrapping_add(tail[8] as u32); }
+    if remaining >= 10 { c = c.wrapping_add((tail[9] as u32) << 8); }
+    if remaining >= 11 { c = c.wrapping_add((tail[10] as u32) << 16); }
+    if remaining >= 12 { c = c.wrapping_add((tail[11] as u32) << 24); }
+
+    if remaining > 0 {
+        // Final mixing
+        c ^= b; c = c.wrapping_sub(b.rotate_left(14));
+        a ^= c; a = a.wrapping_sub(c.rotate_left(11));
+        b ^= a; b = b.wrapping_sub(a.rotate_left(25));
+        c ^= b; c = c.wrapping_sub(b.rotate_left(16));
+        a ^= c; a = a.wrapping_sub(c.rotate_left(4));
+        b ^= a; b = b.wrapping_sub(a.rotate_left(14));
+        c ^= b; c = c.wrapping_sub(b.rotate_left(24));
+    }
+
+    c
+}
+
+fn compute_pamt_hash(pamt_data: &[u8]) -> u32 {
+    hashlittle(&pamt_data[12..], INTEGRITY_SEED)
+}
+
+fn compute_papgt_hash(papgt_data: &[u8]) -> u32 {
+    hashlittle(&papgt_data[12..], INTEGRITY_SEED)
+}
+
+/// Update PAMT PazCrc after the overlay PAZ is written.
+/// 1. Computes paz_crc = hashlittle(paz_data, INTEGRITY_SEED)
+/// 2. Writes paz_crc at pamt[16..20] (PazInfo CRC field)
+/// 3. Recomputes header_crc = hashlittle(&pamt[12..], INTEGRITY_SEED)
+/// 4. Writes header_crc at pamt[0..4]
+fn update_pamt_paz_crc(pamt: &mut Vec<u8>, paz_data: &[u8]) {
+    let paz_crc = hashlittle(paz_data, INTEGRITY_SEED);
+    pamt[16..20].copy_from_slice(&paz_crc.to_le_bytes());
+    let header_crc = hashlittle(&pamt[12..], INTEGRITY_SEED);
+    pamt[0..4].copy_from_slice(&header_crc.to_le_bytes());
+}
+
+// =============================================================================
+// PAMT Parser — read and search base game PAMT index files
+// =============================================================================
+
+/// A parsed file record from a PAMT index.
+#[derive(Debug, Clone)]
+struct PamtFileRecord {
+    name_offset: u32,
+    paz_offset: u32,
+    comp_size: u32,
+    decomp_size: u32,
+    paz_index: u16,
+    flags: u16,
+}
+
+/// Parsed PAMT structure with all blocks.
+#[derive(Debug)]
+struct PamtInfo {
+    #[allow(dead_code)]
+    header_crc: u32,
+    #[allow(dead_code)]
+    paz_count: u32,
+    #[allow(dead_code)]
+    unknown: u32,
+    #[allow(dead_code)]
+    paz_infos: Vec<(u32, u32, u32)>, // (index, crc, file_size)
+    dir_data: Vec<u8>,
+    fn_data: Vec<u8>,
+    hash_entries: Vec<(u32, u32, u32, u32)>, // (folder_hash, name_offset, file_start, file_count)
+    file_records: Vec<PamtFileRecord>,
+}
+
+/// Parse a PAMT file. Port of read_pamt from parse_pamt.py.
+fn read_pamt(data: &[u8]) -> Result<PamtInfo, String> {
+    if data.len() < 12 {
+        return Err("PAMT too small for header".to_string());
+    }
+
+    let header_crc = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    let paz_count = u32::from_le_bytes(data[4..8].try_into().unwrap());
+    let unknown = u32::from_le_bytes(data[8..12].try_into().unwrap());
+
+    let mut pos = 12usize;
+    let mut paz_infos = Vec::new();
+    for _ in 0..paz_count {
+        if pos + 12 > data.len() {
+            return Err("PAMT truncated in PazInfo block".to_string());
+        }
+        let idx = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
+        let crc = u32::from_le_bytes(data[pos + 4..pos + 8].try_into().unwrap());
+        let fsize = u32::from_le_bytes(data[pos + 8..pos + 12].try_into().unwrap());
+        paz_infos.push((idx, crc, fsize));
+        pos += 12;
+    }
+
+    // Directory block
+    if pos + 4 > data.len() {
+        return Err("PAMT truncated before dir block size".to_string());
+    }
+    let dir_size = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+    pos += 4;
+    if pos + dir_size > data.len() {
+        return Err("PAMT truncated in dir block".to_string());
+    }
+    let dir_data = data[pos..pos + dir_size].to_vec();
+    pos += dir_size;
+
+    // Filename block
+    if pos + 4 > data.len() {
+        return Err("PAMT truncated before fn block size".to_string());
+    }
+    let fn_size = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+    pos += 4;
+    if pos + fn_size > data.len() {
+        return Err("PAMT truncated in fn block".to_string());
+    }
+    let fn_data = data[pos..pos + fn_size].to_vec();
+    pos += fn_size;
+
+    // Hash table
+    if pos + 4 > data.len() {
+        return Err("PAMT truncated before hash count".to_string());
+    }
+    let hash_count = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+    pos += 4;
+    let mut hash_entries = Vec::new();
+    for _ in 0..hash_count {
+        if pos + 16 > data.len() {
+            return Err("PAMT truncated in hash table".to_string());
+        }
+        let folder_hash = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
+        let name_offset = u32::from_le_bytes(data[pos + 4..pos + 8].try_into().unwrap());
+        let file_start = u32::from_le_bytes(data[pos + 8..pos + 12].try_into().unwrap());
+        let file_count = u32::from_le_bytes(data[pos + 12..pos + 16].try_into().unwrap());
+        hash_entries.push((folder_hash, name_offset, file_start, file_count));
+        pos += 16;
+    }
+
+    // File records
+    if pos + 4 > data.len() {
+        return Err("PAMT truncated before file count".to_string());
+    }
+    let file_count = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+    pos += 4;
+    let mut file_records = Vec::new();
+    for _ in 0..file_count {
+        if pos + 20 > data.len() {
+            return Err("PAMT truncated in file records".to_string());
+        }
+        let name_offset = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
+        let paz_offset = u32::from_le_bytes(data[pos + 4..pos + 8].try_into().unwrap());
+        let comp_size = u32::from_le_bytes(data[pos + 8..pos + 12].try_into().unwrap());
+        let decomp_size = u32::from_le_bytes(data[pos + 12..pos + 16].try_into().unwrap());
+        let paz_index = u16::from_le_bytes(data[pos + 16..pos + 18].try_into().unwrap());
+        let flags = u16::from_le_bytes(data[pos + 18..pos + 20].try_into().unwrap());
+        file_records.push(PamtFileRecord {
+            name_offset,
+            paz_offset,
+            comp_size,
+            decomp_size,
+            paz_index,
+            flags,
+        });
+        pos += 20;
+    }
+
+    Ok(PamtInfo {
+        header_crc,
+        paz_count,
+        unknown,
+        paz_infos,
+        dir_data,
+        fn_data,
+        hash_entries,
+        file_records,
+    })
+}
+
+/// Resolve a name from a linked-list name block (dir or filename).
+/// Each entry: [ParentOffset:4][NameLen:1][NameBytes:NameLen]
+/// ParentOffset = 0xFFFFFFFF means root. Walk parent chain, collect segments, reverse.
+fn resolve_name(block_data: &[u8], name_offset: u32) -> String {
+    let mut segments: Vec<String> = Vec::new();
+    let mut offset = name_offset as usize;
+    let mut guard = 0;
+
+    while offset != 0xFFFFFFFF_usize && guard < 64 {
+        if offset + 5 > block_data.len() {
+            break;
+        }
+        let parent = u32::from_le_bytes(block_data[offset..offset + 4].try_into().unwrap());
+        let name_len = block_data[offset + 4] as usize;
+        if offset + 5 + name_len > block_data.len() {
+            break;
+        }
+        let seg = String::from_utf8_lossy(&block_data[offset + 5..offset + 5 + name_len]).to_string();
+        segments.push(seg);
+        offset = if parent == 0xFFFFFFFF { 0xFFFFFFFF_usize } else { parent as usize };
+        guard += 1;
+    }
+
+    segments.reverse();
+    segments.join("")
+}
+
+/// Build a full path index: "dir_path/filename" -> PamtFileRecord for all files in a PAMT.
+fn build_file_index(pamt: &PamtInfo) -> HashMap<String, PamtFileRecord> {
+    let mut index = HashMap::new();
+
+    // Build folder_hash -> dir_name mapping
+    let mut dir_names: HashMap<u32, String> = HashMap::new();
+    for &(folder_hash, name_offset, _, _) in &pamt.hash_entries {
+        dir_names.insert(folder_hash, resolve_name(&pamt.dir_data, name_offset));
+    }
+
+    // Map each file record to its directory via hash entries
+    for (i, rec) in pamt.file_records.iter().enumerate() {
+        let filename = resolve_name(&pamt.fn_data, rec.name_offset);
+        for &(folder_hash, _, file_start, file_count) in &pamt.hash_entries {
+            let start = file_start as usize;
+            let count = file_count as usize;
+            if i >= start && i < start + count {
+                let dirname = dir_names.get(&folder_hash).cloned().unwrap_or_default();
+                let full_path = if dirname.is_empty() {
+                    filename.clone()
+                } else {
+                    format!("{}/{}", dirname, filename)
+                };
+                index.insert(full_path, rec.clone());
+                break;
+            }
+        }
+    }
+
+    index
+}
+
+/// Search ALL numbered game directories (0000-0035) for a target file.
+/// Returns (group_id, full_path, record) or an error if not found.
+/// Port of find_file_in_game from the Python apply_mods.py.
+fn find_file_in_game(game_path: &str, target_file: &str) -> Result<(String, String, PamtFileRecord), String> {
+    let target_lower = target_file.to_lowercase().replace('\\', "/");
+    let target_basename = target_lower.rsplit('/').next().unwrap_or(&target_lower);
+
+    let game_dir = Path::new(game_path);
+    let mut basename_match: Option<(String, String, PamtFileRecord)> = None;
+    let mut basename_ambiguous = false;
+
+    // Collect and sort numbered directories
+    let mut dirs: Vec<_> = match fs::read_dir(game_dir) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                e.path().is_dir() && name.chars().all(|c| c.is_ascii_digit()) && name != "0036"
+            })
+            .collect(),
+        Err(_) => return Err(format!("Cannot read game directory: {}", game_path)),
+    };
+    dirs.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+
+    for entry in &dirs {
+        let dir_name = entry.file_name().to_string_lossy().to_string();
+        let pamt_path = entry.path().join("0.pamt");
+        if !pamt_path.exists() {
+            continue;
+        }
+
+        let data = match fs::read(&pamt_path) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        let pamt_info = match read_pamt(&data) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let file_idx = build_file_index(&pamt_info);
+
+        for (path, rec) in &file_idx {
+            let ep = path.to_lowercase().replace('\\', "/");
+
+            // Exact match
+            if ep == target_lower {
+                return Ok((dir_name, path.clone(), rec.clone()));
+            }
+            // PAMT path is suffix of target
+            if target_lower.ends_with(&format!("/{}", ep)) || target_lower.ends_with(&ep) {
+                return Ok((dir_name, path.clone(), rec.clone()));
+            }
+            // Target is suffix of PAMT path
+            if ep.ends_with(&format!("/{}", target_lower)) {
+                return Ok((dir_name, path.clone(), rec.clone()));
+            }
+            // Basename match (last resort)
+            let ep_basename = ep.rsplit('/').next().unwrap_or(&ep);
+            if ep_basename == target_basename {
+                if basename_match.is_none() && !basename_ambiguous {
+                    basename_match = Some((dir_name.clone(), path.clone(), rec.clone()));
+                } else {
+                    basename_ambiguous = true;
+                    basename_match = None;
+                }
+            }
+        }
+    }
+
+    if let Some(m) = basename_match {
+        return Ok(m);
+    }
+
+    Err(format!("'{}' not found in any PAMT index", target_file))
+}
+
+/// Extract a file from a game PAZ archive given its group directory and record.
+/// Reads compressed data from {group_id}/{paz_index}.paz and decompresses it.
+fn extract_from_paz(game_path: &str, group_id: &str, rec: &PamtFileRecord, filename: &str) -> Result<Vec<u8>, String> {
+    let group_dir = Path::new(game_path).join(group_id);
+    let paz_path = group_dir.join(format!("{}.paz", rec.paz_index));
+
+    if !paz_path.exists() {
+        return Err(format!("PAZ file not found: {}", paz_path.display()));
+    }
+
+    let mut paz_file = fs::File::open(&paz_path)
+        .map_err(|e| format!("Failed to open PAZ: {}", e))?;
+    use std::io::Seek;
+    paz_file.seek(std::io::SeekFrom::Start(rec.paz_offset as u64))
+        .map_err(|e| format!("Failed to seek in PAZ: {}", e))?;
+    let mut raw = vec![0u8; rec.comp_size as usize];
+    paz_file.read_exact(&mut raw)
+        .map_err(|e| format!("Failed to read from PAZ: {}", e))?;
+
+    if raw.len() != rec.comp_size as usize {
+        return Err(format!(
+            "Short read: got {} bytes, expected {}",
+            raw.len(), rec.comp_size
+        ));
+    }
+
+    // Check encryption (flags >> 4 != 0 means encrypted)
+    if (rec.flags >> 4) != 0 {
+        return Err(format!(
+            "File '{}' is encrypted (flags=0x{:04X}). Encrypted base files are not yet supported.",
+            filename, rec.flags
+        ));
+    }
+
+    // Decompress if sizes differ
+    if rec.comp_size != rec.decomp_size {
+        let decompressed = lz4::block::decompress(&raw, Some(rec.decomp_size as i32))
+            .map_err(|e| format!("LZ4 decompression failed for '{}': {}", filename, e))?;
+        Ok(decompressed)
+    } else {
+        Ok(raw)
+    }
+}
+
+// =============================================================================
+// build_multi_pamt — construct overlay PAMT for multiple files
+// Port of build_multi_pamt from parse_pamt.py (verified byte-identical output)
+// =============================================================================
+
+/// Info for one file to include in the overlay PAMT/PAZ.
+struct OverlayFileInfo {
+    dir_path: String,    // e.g. "gamedata/binary__/client/bin"
+    filename: String,    // e.g. "storeinfo.pabgb"
+    paz_offset: u32,     // offset within the concatenated PAZ
+    comp_size: u32,      // compressed size in PAZ
+    decomp_size: u32,    // decompressed size
+    flags: u16,          // compression/encryption flags (0x0002 = LZ4)
+}
+
+/// Build a complete PAMT binary for the overlay with multiple files.
+/// Exact port of build_multi_pamt from the verified Python implementation.
+fn build_multi_pamt(files: &[OverlayFileInfo], paz_data_len: u32) -> Vec<u8> {
+    // ---- Build directory block ----
+    let mut dir_block: Vec<u8> = Vec::new();
+    let mut dir_offsets: HashMap<String, u32> = HashMap::new();
+
+    // Collect unique directory paths, sorted
+    let mut all_dirs: Vec<String> = files.iter().map(|f| f.dir_path.clone()).collect();
+    all_dirs.sort();
+    all_dirs.dedup();
+
+    for dir_path in &all_dirs {
+        let parts: Vec<&str> = dir_path.split('/').collect();
+        for depth in 0..parts.len() {
+            let key: String = parts[..=depth].join("/");
+            if !dir_offsets.contains_key(&key) {
+                let offset_in_block = dir_block.len() as u32;
+                dir_offsets.insert(key.clone(), offset_in_block);
+
+                let (parent_offset, segment) = if depth == 0 {
+                    (0xFFFFFFFFu32, parts[depth].to_string())
+                } else {
+                    let parent_key: String = parts[..depth].join("/");
+                    let parent_off = *dir_offsets.get(&parent_key).unwrap();
+                    (parent_off, format!("/{}", parts[depth]))
+                };
+
+                let seg_bytes = segment.as_bytes();
+                dir_block.extend_from_slice(&parent_offset.to_le_bytes());
+                dir_block.push(seg_bytes.len() as u8);
+                dir_block.extend_from_slice(seg_bytes);
+            }
+        }
+    }
+
+    // ---- Build filename block + hash entries + file records ----
+    let mut fn_block: Vec<u8> = Vec::new();
+    let mut hash_entries_data: Vec<Vec<u8>> = Vec::new();
+    let mut file_records_data: Vec<Vec<u8>> = Vec::new();
+
+    // Group files by directory (sorted), preserving order
+    let mut grouped: Vec<(String, Vec<&OverlayFileInfo>)> = Vec::new();
+    {
+        let mut seen: Vec<String> = Vec::new();
+        for f in files {
+            if let Some(entry) = grouped.iter_mut().find(|(d, _)| d == &f.dir_path) {
+                entry.1.push(f);
+            } else {
+                seen.push(f.dir_path.clone());
+                grouped.push((f.dir_path.clone(), vec![f]));
+            }
+        }
+        grouped.sort_by(|a, b| a.0.cmp(&b.0));
+    }
+
+    let mut file_idx: u32 = 0;
+    for (dir_path, dir_files) in &grouped {
+        let folder_hash = hashlittle(dir_path.as_bytes(), INTEGRITY_SEED);
+        let dir_name_offset = *dir_offsets.get(dir_path).unwrap();
+        let start_index = file_idx;
+
+        for f in dir_files {
+            let fn_offset = fn_block.len() as u32;
+            // Filename entry: [parent:4=0xFFFFFFFF][len:1][name_bytes]
+            let fn_bytes = f.filename.as_bytes();
+            fn_block.extend_from_slice(&0xFFFFFFFFu32.to_le_bytes());
+            fn_block.push(fn_bytes.len() as u8);
+            fn_block.extend_from_slice(fn_bytes);
+
+            // File record: [NameOff:4][PazOff:4][CompSize:4][DecompSize:4][PazIndex:2=0][Flags:2]
+            let mut rec = Vec::with_capacity(20);
+            rec.extend_from_slice(&fn_offset.to_le_bytes());
+            rec.extend_from_slice(&f.paz_offset.to_le_bytes());
+            rec.extend_from_slice(&f.comp_size.to_le_bytes());
+            rec.extend_from_slice(&f.decomp_size.to_le_bytes());
+            rec.extend_from_slice(&0u16.to_le_bytes()); // paz_index = 0
+            rec.extend_from_slice(&f.flags.to_le_bytes());
+            file_records_data.push(rec);
+
+            file_idx += 1;
+        }
+
+        // Hash entry: [FolderHash:4][NameOffset:4][FileStartIndex:4][FileCount:4]
+        let mut he = Vec::with_capacity(16);
+        he.extend_from_slice(&folder_hash.to_le_bytes());
+        he.extend_from_slice(&dir_name_offset.to_le_bytes());
+        he.extend_from_slice(&start_index.to_le_bytes());
+        he.extend_from_slice(&(dir_files.len() as u32).to_le_bytes());
+        hash_entries_data.push(he);
+    }
+
+    // ---- Assemble inner PAMT (everything after HeaderCrc) ----
+    let mut inner: Vec<u8> = Vec::new();
+    inner.extend_from_slice(&1u32.to_le_bytes());             // PazCount = 1
+    inner.extend_from_slice(&0x610E0232u32.to_le_bytes());    // Unknown/magic
+    inner.extend_from_slice(&0u32.to_le_bytes());             // PazInfo: Index = 0
+    inner.extend_from_slice(&0u32.to_le_bytes());             // PazInfo: Crc = 0 (placeholder)
+    inner.extend_from_slice(&paz_data_len.to_le_bytes());     // PazInfo: FileSize
+
+    // Dir block
+    inner.extend_from_slice(&(dir_block.len() as u32).to_le_bytes());
+    inner.extend_from_slice(&dir_block);
+
+    // Filename block
+    inner.extend_from_slice(&(fn_block.len() as u32).to_le_bytes());
+    inner.extend_from_slice(&fn_block);
+
+    // Hash entries
+    inner.extend_from_slice(&(hash_entries_data.len() as u32).to_le_bytes());
+    for h in &hash_entries_data {
+        inner.extend_from_slice(h);
+    }
+
+    // File records
+    inner.extend_from_slice(&(file_records_data.len() as u32).to_le_bytes());
+    for r in &file_records_data {
+        inner.extend_from_slice(r);
+    }
+
+    // Final PAMT: [HeaderCrc:4][inner...]
+    // Write placeholder HeaderCrc (0), then compute using compute_pamt_hash
+    let mut pamt = Vec::with_capacity(4 + inner.len());
+    pamt.extend_from_slice(&0u32.to_le_bytes()); // placeholder
+    pamt.extend_from_slice(&inner);
+
+    // Compute HeaderCrc = hashlittle(pamt[12..], INTEGRITY_SEED)
+    let header_crc = compute_pamt_hash(&pamt);
+    pamt[0..4].copy_from_slice(&header_crc.to_le_bytes());
+
+    pamt
+}
+
+// =============================================================================
+// build_papgt_with_overlay — construct a PAPGT with the 0036 overlay entry
+// =============================================================================
+
+/// Build a complete PAPGT binary that includes the 0036 overlay entry.
+///
+/// PAPGT structure:
+///   [PlatformMagic:4][Hash:4][EntryCount:1][LangType:2][Zero:1]  (12-byte header)
+///   [Entry0..N: IsOptional:1, LangType:2, Zero:1, NameOffset:4, PamtCrc:4]  (12 bytes each)
+///   [NamesBlockLength:4]
+///   [NullTerminatedNames...]
+///
+/// The Hash at offset 4 = hashlittle(papgt[12..], INTEGRITY_SEED) — everything after the 12-byte header.
+/// The 0036 entry: IsOptional=0, LangType=0x3FFF, Zero=0, NameOffset=<computed>, PamtCrc=<pamt_header_crc>.
+fn build_papgt_with_overlay(clean_papgt: &[u8], pamt_header_crc: u32) -> Result<Vec<u8>, String> {
+    if clean_papgt.len() < 12 {
+        return Err("Clean PAPGT is too small (< 12 bytes)".to_string());
+    }
+
+    // Parse the clean PAPGT header
+    let platform_magic = u32::from_le_bytes(clean_papgt[0..4].try_into().unwrap());
+    // clean_papgt[4..8] is the old hash — we will recompute
+    let entry_count = clean_papgt[8] as usize;
+    let lang_type = u16::from_le_bytes(clean_papgt[9..11].try_into().unwrap());
+    let zero_byte = clean_papgt[11];
+
+    let entries_start = 12;
+    let entries_end = entries_start + entry_count * 12;
+
+    if clean_papgt.len() < entries_end + 4 {
+        return Err(format!(
+            "Clean PAPGT too small for {} entries (need {} bytes, have {})",
+            entry_count,
+            entries_end + 4,
+            clean_papgt.len()
+        ));
+    }
+
+    // Parse existing entries
+    let mut entries: Vec<(u8, u16, u8, u32, u32)> = Vec::new(); // (is_optional, lang_type, zero, name_offset, pamt_crc)
+    for i in 0..entry_count {
+        let base = entries_start + i * 12;
+        let is_optional = clean_papgt[base];
+        let e_lang = u16::from_le_bytes(clean_papgt[base + 1..base + 3].try_into().unwrap());
+        let e_zero = clean_papgt[base + 3];
+        let name_offset = u32::from_le_bytes(clean_papgt[base + 4..base + 8].try_into().unwrap());
+        let pamt_crc = u32::from_le_bytes(clean_papgt[base + 8..base + 12].try_into().unwrap());
+        entries.push((is_optional, e_lang, e_zero, name_offset, pamt_crc));
+    }
+
+    // Read the names block
+    let names_block_len = u32::from_le_bytes(
+        clean_papgt[entries_end..entries_end + 4].try_into().unwrap(),
+    ) as usize;
+    let names_start = entries_end + 4;
+    let names_end = names_start + names_block_len;
+
+    if clean_papgt.len() < names_end {
+        return Err(format!(
+            "Clean PAPGT names block extends past end (names_end={}, file_len={})",
+            names_end,
+            clean_papgt.len()
+        ));
+    }
+
+    let mut names_block = clean_papgt[names_start..names_end].to_vec();
+
+    // Check if 0036 already exists in the names
+    let overlay_name = b"0036\0";
+    let mut overlay_name_offset: Option<u32> = None;
+
+    // Scan existing names for "0036"
+    let mut pos = 0;
+    while pos < names_block.len() {
+        let end = names_block[pos..].iter().position(|&b| b == 0).unwrap_or(names_block.len() - pos);
+        let name = &names_block[pos..pos + end];
+        if name == b"0036" {
+            overlay_name_offset = Some(pos as u32);
+            break;
+        }
+        pos += end + 1; // skip past null terminator
+    }
+
+    // Check if an entry for 0036 already exists
+    let already_has_overlay = if let Some(offset) = overlay_name_offset {
+        entries.iter().any(|(_, _, _, no, _)| *no == offset)
+    } else {
+        false
+    };
+
+    if already_has_overlay {
+        // 0036 entry already exists — update the PamtCrc and recompute hash
+        let offset_val = overlay_name_offset.unwrap();
+        for entry in entries.iter_mut() {
+            if entry.3 == offset_val {
+                entry.4 = pamt_header_crc;
+            }
+        }
+    } else {
+        // Prepend "0036\0" to the names block and shift all existing name offsets
+        let mut new_names_block = Vec::new();
+        new_names_block.extend_from_slice(overlay_name);
+        new_names_block.extend_from_slice(&names_block);
+        let shift = overlay_name.len() as u32; // 5 bytes for "0036\0"
+
+        // Shift all existing entries' name offsets
+        for entry in entries.iter_mut() {
+            entry.3 += shift;
+        }
+
+        names_block = new_names_block;
+
+        // Insert the 0036 entry at the front: IsOptional=0, LangType=0x3FFF, Zero=0, NameOffset=0
+        entries.insert(0, (0, 0x3FFF, 0, 0, pamt_header_crc));
+    }
+
+    // Rebuild the PAPGT binary
+    let new_entry_count = entries.len();
+    let new_names_block_len = names_block.len() as u32;
+
+    // Body = entries + names_block_length + names_block
+    let body_size = new_entry_count * 12 + 4 + names_block.len();
+    let mut body = Vec::with_capacity(body_size);
+
+    for (is_optional, e_lang, e_zero, name_offset, pamt_crc) in &entries {
+        body.push(*is_optional);
+        body.extend_from_slice(&e_lang.to_le_bytes());
+        body.push(*e_zero);
+        body.extend_from_slice(&name_offset.to_le_bytes());
+        body.extend_from_slice(&pamt_crc.to_le_bytes());
+    }
+
+    body.extend_from_slice(&new_names_block_len.to_le_bytes());
+    body.extend_from_slice(&names_block);
+
+    // Build the complete PAPGT with placeholder hash, then compute via compute_papgt_hash
+    let total_size = 12 + body.len();
+    let mut papgt = Vec::with_capacity(total_size);
+    papgt.extend_from_slice(&platform_magic.to_le_bytes());
+    papgt.extend_from_slice(&0u32.to_le_bytes()); // placeholder hash
+    papgt.push(new_entry_count as u8);
+    papgt.extend_from_slice(&lang_type.to_le_bytes());
+    papgt.push(zero_byte);
+    papgt.extend_from_slice(&body);
+
+    // Compute hash = hashlittle(papgt[12..], INTEGRITY_SEED) and write at offset 4
+    let hash = compute_papgt_hash(&papgt);
+    papgt[4..8].copy_from_slice(&hash.to_le_bytes());
+
+    Ok(papgt)
+}
+
+#[tauri::command]
+pub fn apply_mods(
+    game_path: String,
+    mods_path: String,
+    active_mods: Vec<ActiveMod>,
+    backup_dir: String,
+) -> Result<ApplyResult, String> {
+    let mut result = ApplyResult {
+        success: true,
+        applied: Vec::new(),
+        errors: Vec::new(),
+        backup_created: false,
+    };
+
+    let backup_path = Path::new(&backup_dir);
+
+    // Ensure backup directory exists
+    if !backup_path.exists() {
+        fs::create_dir_all(backup_path)
+            .map_err(|e| format!("Failed to create backup directory: {}", e))?;
+    }
+
+    // Collect all patches grouped by game file
+    let mut file_patches: HashMap<String, Vec<(String, Vec<ModChange>)>> = HashMap::new();
+
+    for active_mod in &active_mods {
+        let path = Path::new(&mods_path).join(&active_mod.file_name);
+        match parse_mod_file(&path) {
+            Ok(mod_file) => {
+                let (title, _, _, _) = get_mod_display_info(&mod_file);
+                for patch in &mod_file.patches {
+                    let changes: Vec<ModChange> = patch.changes.iter()
+                        .enumerate()
+                        .filter(|(i, _)| !active_mod.disabled_indices.contains(i))
+                        .map(|(_, c)| c.clone())
+                        .collect();
+
+                    if !changes.is_empty() {
+                        file_patches.entry(patch.game_file.clone())
+                            .or_default()
+                            .push((title.clone(), changes));
+                    }
+                }
+            }
+            Err(e) => {
+                result.errors.push(format!("{}: {}", active_mod.file_name, e));
+                result.success = false;
+            }
+        }
+    }
+
+    // Separate pabgb files (PAZ overlay) from regular files
+    let mut pabgb_patches: Vec<(String, Vec<(String, Vec<ModChange>)>)> = Vec::new();
+    let mut regular_patches: Vec<(String, Vec<(String, Vec<ModChange>)>)> = Vec::new();
+
+    for (game_file, mod_patches) in &file_patches {
+        let is_pabgb = game_file.starts_with("gamedata/") || game_file.ends_with(".pabgb");
+        if is_pabgb {
+            pabgb_patches.push((game_file.clone(), mod_patches.clone()));
+        } else {
+            regular_patches.push((game_file.clone(), mod_patches.clone()));
+        }
+    }
+
+    // === MULTI-FILE PAZ OVERLAY PIPELINE ===
+    if !pabgb_patches.is_empty() {
+        let overlay_dir = Path::new(&game_path).join("0036");
+        let overlay_paz = overlay_dir.join("0.paz");
+        let overlay_pamt = overlay_dir.join("0.pamt");
+        let papgt_path = Path::new(&game_path).join("meta").join("0.papgt");
+
+        // Ensure overlay directory exists
+        if !overlay_dir.exists() {
+            fs::create_dir_all(&overlay_dir)
+                .map_err(|e| format!("Failed to create overlay directory 0036: {}", e))?;
+        }
+
+        // Backup overlay PAZ (only first time, if it exists)
+        let paz_backup = backup_path.join("overlay_clean.paz");
+        if !paz_backup.exists() && overlay_paz.exists() {
+            fs::copy(&overlay_paz, &paz_backup)
+                .map_err(|e| format!("Failed to backup overlay PAZ: {}", e))?;
+            result.backup_created = true;
+        }
+        // Backup overlay PAMT (only first time, if it exists)
+        let pamt_backup = backup_path.join("overlay_clean.pamt");
+        if !pamt_backup.exists() && overlay_pamt.exists() {
+            fs::copy(&overlay_pamt, &pamt_backup)
+                .map_err(|e| format!("Failed to backup overlay PAMT: {}", e))?;
+        }
+        // Backup PAPGT (only first time)
+        let papgt_backup = backup_path.join("papgt_clean.bin");
+        if !papgt_backup.exists() && papgt_path.exists() {
+            fs::copy(&papgt_path, &papgt_backup)
+                .map_err(|e| format!("Failed to backup PAPGT: {}", e))?;
+        }
+
+        // Process each pabgb file: extract clean data, apply patches, compress
+        // Collect results for building the combined PAZ and PAMT
+        let mut overlay_files: Vec<OverlayFileInfo> = Vec::new();
+        let mut paz_data: Vec<u8> = Vec::new();
+        let mut had_pabgb_error = false;
+
+        // Sort pabgb_patches for deterministic output
+        pabgb_patches.sort_by(|a, b| a.0.cmp(&b.0));
+
+        for (game_file, mod_patches) in &pabgb_patches {
+            // Extract the bare filename from the game_file path
+            // e.g. "gamedata/binary__/client/bin/storeinfo.pabgb" -> "storeinfo.pabgb"
+            let bare_filename = game_file.rsplit('/').next().unwrap_or(game_file);
+
+            // All pabgb files live at gamedata/binary__/client/bin/ regardless of
+            // what the mod JSON says (mods use shortened paths like "gamedata/storeinfo.pabgb")
+            let dir_path = "gamedata/binary__/client/bin";
+
+            // Sanitized name for backup file (replace / with _)
+            let clean_name = bare_filename.replace(".pabgb", "_clean.bin");
+            let clean_backup = backup_path.join(&clean_name);
+
+            // Get clean decompressed data for this pabgb file
+            let flat_data_result: Result<Vec<u8>, String> = if clean_backup.exists() {
+                // Read from existing clean backup
+                log::info!("Using cached clean {}", bare_filename);
+                fs::read(&clean_backup)
+                    .map_err(|e| format!("Failed to read clean backup for {}: {}", bare_filename, e))
+            } else {
+                // Search ALL game directories for this file (port of Python find_file_in_game)
+                match find_file_in_game(&game_path, game_file) {
+                    Ok((group_id, full_path, rec)) => {
+                        log::info!(
+                            "Found {} in group {}: comp={}, decomp={}, flags=0x{:04X}",
+                            full_path, group_id, rec.comp_size, rec.decomp_size, rec.flags
+                        );
+                        match extract_from_paz(&game_path, &group_id, &rec, bare_filename) {
+                            Ok(data) => {
+                                log::info!("Extracted clean {}: {} bytes", bare_filename, data.len());
+                                // Cache the clean data
+                                let _ = fs::write(&clean_backup, &data);
+                                result.backup_created = true;
+                                Ok(data)
+                            }
+                            Err(e) => Err(format!("Failed to extract {}: {}", bare_filename, e)),
+                        }
+                    }
+                    Err(e) => Err(format!("Failed to find {}: {}", bare_filename, e)),
+                }
+            };
+
+            let mut flat_data = match flat_data_result {
+                Ok(data) => data,
+                Err(e) => {
+                    result.errors.push(e);
+                    result.success = false;
+                    had_pabgb_error = true;
+                    continue;
+                }
+            };
+
+            // Apply all patches to the flat decompressed data
+            for (mod_name, changes) in mod_patches {
+                for change in changes {
+                    let offset = change.offset as usize;
+                    let patched_bytes = hex::decode(&change.patched)
+                        .map_err(|e| format!("Bad hex in {}: {}", mod_name, e))?;
+
+                    if offset + patched_bytes.len() > flat_data.len() {
+                        result.errors.push(format!(
+                            "{}: offset {} exceeds {} size ({})",
+                            mod_name, change.offset, bare_filename, flat_data.len()
+                        ));
+                        continue;
+                    }
+
+                    flat_data[offset..offset + patched_bytes.len()].copy_from_slice(&patched_bytes);
+                }
+                // Track unique mod names applied
+                if !result.applied.contains(mod_name) {
+                    result.applied.push(mod_name.clone());
+                }
+            }
+
+            // LZ4 compress the patched data
+            let compressed = lz4::block::compress(&flat_data, None, false)
+                .map_err(|e| format!("LZ4 compression failed for {}: {}", bare_filename, e))?;
+
+            // Record the PAZ offset before padding
+            let paz_offset = paz_data.len() as u32;
+            let comp_size = compressed.len() as u32;
+            let decomp_size = flat_data.len() as u32;
+
+            // Append compressed data to PAZ, padded to 16-byte alignment
+            paz_data.extend_from_slice(&compressed);
+            let padded_size = (paz_data.len() + 15) & !15;
+            paz_data.resize(padded_size, 0);
+
+            overlay_files.push(OverlayFileInfo {
+                dir_path: dir_path.to_string(),
+                filename: bare_filename.to_string(),
+                paz_offset,
+                comp_size,
+                decomp_size,
+                flags: 0x0002, // LZ4 compressed
+            });
+        }
+
+        if had_pabgb_error && overlay_files.is_empty() {
+            // All pabgb files failed, skip overlay writing
+        } else if !overlay_files.is_empty() {
+            // Build the multi-file PAMT
+            let paz_total_len = paz_data.len() as u32;
+            let mut new_pamt = build_multi_pamt(&overlay_files, paz_total_len);
+
+            // Write PAZ to overlay directory
+            fs::write(&overlay_paz, &paz_data)
+                .map_err(|e| format!("Failed to write overlay PAZ: {}", e))?;
+
+            // Update PAMT PazCrc from the written PAZ data, then recompute HeaderCrc
+            update_pamt_paz_crc(&mut new_pamt, &paz_data);
+
+            // Write PAMT to overlay directory
+            fs::write(&overlay_pamt, &new_pamt)
+                .map_err(|e| format!("Failed to write overlay PAMT: {}", e))?;
+
+            log::info!(
+                "Wrote overlay: {} files, PAZ={} bytes, PAMT={} bytes",
+                overlay_files.len(), paz_data.len(), new_pamt.len()
+            );
+
+            // Build PAPGT with 0036 entry
+            // The PAMT's HeaderCrc is the first 4 bytes
+            let pamt_header_crc = u32::from_le_bytes(new_pamt[0..4].try_into().unwrap());
+
+            // Read the clean PAPGT from backup (without 0036 entry)
+            let clean_papgt_data = if papgt_backup.exists() {
+                fs::read(&papgt_backup)
+                    .map_err(|e| format!("Failed to read clean PAPGT backup: {}", e))?
+            } else if papgt_path.exists() {
+                fs::read(&papgt_path)
+                    .map_err(|e| format!("Failed to read current PAPGT: {}", e))?
+            } else {
+                result.errors.push("No PAPGT found (neither backup nor current)".to_string());
+                result.success = false;
+                Vec::new()
+            };
+
+            if !clean_papgt_data.is_empty() {
+                let new_papgt = build_papgt_with_overlay(&clean_papgt_data, pamt_header_crc)?;
+                fs::write(&papgt_path, &new_papgt)
+                    .map_err(|e| format!("Failed to write PAPGT: {}", e))?;
+            }
+        }
+    }
+
+    // === REGULAR FILE PATCHING (non-PAZ) ===
+    for (game_file, mod_patches) in &regular_patches {
+        let file_path = Path::new(&game_path).join(game_file);
+        if !file_path.exists() {
+            result.errors.push(format!("Game file not found: {}", game_file));
+            result.success = false;
+            continue;
+        }
+
+        match create_backup(game_path.clone(), game_file.clone(), backup_dir.clone()) {
+            Ok(_) => result.backup_created = true,
+            Err(e) => {
+                result.errors.push(format!("Backup failed: {}", e));
+                result.success = false;
+                continue;
+            }
+        }
+
+        let mut data = fs::read(&file_path)
+            .map_err(|e| format!("Failed to read {}: {}", game_file, e))?;
+
+        for (mod_name, changes) in mod_patches {
+            for change in changes {
+                let offset = change.offset as usize;
+                let patched_bytes = hex::decode(&change.patched)
+                    .map_err(|e| format!("Bad hex in {}: {}", mod_name, e))?;
+                if offset + patched_bytes.len() > data.len() {
+                    continue;
+                }
+                data[offset..offset + patched_bytes.len()].copy_from_slice(&patched_bytes);
+            }
+            if !result.applied.contains(mod_name) {
+                result.applied.push(mod_name.clone());
+            }
+        }
+
+        fs::write(&file_path, &data)
+            .map_err(|e| format!("Failed to write {}: {}", game_file, e))?;
+    }
+
+    Ok(result)
+}
+
+#[tauri::command]
+pub fn revert_mods(game_path: String, backup_dir: String) -> Result<Vec<String>, String> {
+    let backup_path = Path::new(&backup_dir);
+    if !backup_path.exists() {
+        return Err("No backups directory found".to_string());
+    }
+
+    let mut restored = Vec::new();
+
+    // Unmount = restore clean PAPGT (without 0036)
+    // The game ignores the 0036 folder when PAPGT doesn't reference it
+    let papgt_backup = backup_path.join("papgt_clean.bin");
+    let papgt_path = Path::new(&game_path).join("meta").join("0.papgt");
+    if papgt_backup.exists() {
+        fs::copy(&papgt_backup, &papgt_path)
+            .map_err(|e| format!("Failed to restore PAPGT: {}", e))?;
+        restored.push("Mods unmounted — PAPGT restored to clean".to_string());
+    } else {
+        return Err("No clean PAPGT backup found. Run 'Initialize' first.".to_string());
+    }
+
+    Ok(restored)
+}
+
+// === First-startup initialization ===
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InitResult {
+    pub success: bool,
+    pub mods_dir_created: bool,
+    pub backups_created: bool,
+    pub messages: Vec<String>,
+}
+
+#[tauri::command]
+pub fn get_app_dir() -> Result<String, String> {
+    let exe = std::env::current_exe()
+        .map_err(|e| format!("Failed to get exe path: {}", e))?;
+    let dir = exe.parent()
+        .ok_or_else(|| "Failed to get exe directory".to_string())?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn initialize_app(game_path: String, app_dir: String) -> Result<InitResult, String> {
+    let mut result = InitResult {
+        success: true,
+        mods_dir_created: false,
+        backups_created: false,
+        messages: Vec::new(),
+    };
+
+    let app_path = Path::new(&app_dir);
+    let mods_dir = app_path.join("mods");
+    let backup_dir = app_path.join("backups");
+
+    // Create mods directory
+    if !mods_dir.exists() {
+        fs::create_dir_all(&mods_dir)
+            .map_err(|e| format!("Failed to create mods directory: {}", e))?;
+        result.mods_dir_created = true;
+        result.messages.push(format!("Created mods directory: {}", mods_dir.display()));
+    }
+
+    // Create backups directory
+    if !backup_dir.exists() {
+        fs::create_dir_all(&backup_dir)
+            .map_err(|e| format!("Failed to create backups directory: {}", e))?;
+        result.messages.push(format!("Created backups directory: {}", backup_dir.display()));
+    }
+
+    // Validate game path
+    let game = Path::new(&game_path);
+    let exe = game.join("bin64").join("CrimsonDesert.exe");
+    if !exe.exists() {
+        result.messages.push("Game executable not found — skipping backup creation".to_string());
+        return Ok(result);
+    }
+
+    // Backup clean PAPGT (if not already backed up)
+    let papgt_clean = backup_dir.join("papgt_clean.bin");
+    if !papgt_clean.exists() {
+        let papgt_path = game.join("meta").join("0.papgt");
+        if papgt_path.exists() {
+            fs::copy(&papgt_path, &papgt_clean)
+                .map_err(|e| format!("Failed to backup PAPGT: {}", e))?;
+            result.messages.push("Backed up clean PAPGT".to_string());
+            result.backups_created = true;
+        }
+    }
+
+    // Backup clean overlay PAMT (reference — never modified)
+    let pamt_ref = backup_dir.join("overlay_clean.pamt");
+    if !pamt_ref.exists() {
+        let pamt_path = game.join("0036").join("0.pamt");
+        if pamt_path.exists() {
+            fs::copy(&pamt_path, &pamt_ref)
+                .map_err(|e| format!("Failed to backup PAMT: {}", e))?;
+            result.messages.push("Backed up overlay PAMT reference".to_string());
+            result.backups_created = true;
+        }
+    }
+
+    // Extract clean pabgb files from the overlay PAZ using PAMT parser
+    let overlay_paz_path = game.join("0036").join("0.paz");
+    let overlay_pamt_path = game.join("0036").join("0.pamt");
+
+    if overlay_paz_path.exists() && overlay_pamt_path.exists() {
+        let pamt_data = fs::read(&overlay_pamt_path)
+            .map_err(|e| format!("Failed to read PAMT: {}", e))?;
+
+        match read_pamt(&pamt_data) {
+            Ok(pamt_info) => {
+                let file_index = build_file_index(&pamt_info);
+                let paz_data = fs::read(&overlay_paz_path)
+                    .map_err(|e| format!("Failed to read overlay PAZ: {}", e))?;
+
+                for (full_path, rec) in &file_index {
+                    let bare_name = full_path.rsplit('/').next().unwrap_or(full_path);
+                    let clean_name = bare_name.replace(".pabgb", "_clean.bin");
+                    let clean_backup = backup_dir.join(&clean_name);
+
+                    if clean_backup.exists() {
+                        continue; // Already extracted
+                    }
+
+                    let offset = rec.paz_offset as usize;
+                    let comp = rec.comp_size as usize;
+                    let decomp = rec.decomp_size as usize;
+
+                    if offset + comp > paz_data.len() {
+                        result.messages.push(format!(
+                            "Warning: {} extends past PAZ end (offset={}, comp={})",
+                            bare_name, offset, comp
+                        ));
+                        continue;
+                    }
+
+                    if comp != decomp {
+                        match lz4::block::decompress(&paz_data[offset..offset + comp], Some(decomp as i32)) {
+                            Ok(flat_data) => {
+                                let _ = fs::write(&clean_backup, &flat_data);
+                                result.messages.push(format!(
+                                    "Extracted clean {}: {} bytes",
+                                    bare_name, flat_data.len()
+                                ));
+                                result.backups_created = true;
+                            }
+                            Err(e) => {
+                                result.messages.push(format!(
+                                    "Warning: Could not decompress {}: {}", bare_name, e
+                                ));
+                            }
+                        }
+                    } else {
+                        // Uncompressed file
+                        let raw = paz_data[offset..offset + comp].to_vec();
+                        let _ = fs::write(&clean_backup, &raw);
+                        result.messages.push(format!(
+                            "Extracted clean {} (uncompressed): {} bytes",
+                            bare_name, raw.len()
+                        ));
+                        result.backups_created = true;
+                    }
+                }
+            }
+            Err(e) => {
+                result.messages.push(format!("Warning: Could not parse overlay PAMT: {}", e));
+            }
+        }
+    } else {
+        result.messages.push("Overlay 0036 not found — will be created on first mount".to_string());
+    }
+
+    result.messages.push("Initialization complete".to_string());
+    Ok(result)
+}
+
+#[tauri::command]
+pub fn import_mod(source_path: String, mods_path: String) -> Result<ModEntry, String> {
+    let source = Path::new(&source_path);
+    let dest = Path::new(&mods_path).join(source.file_name().unwrap());
+
+    fs::copy(source, &dest)
+        .map_err(|e| format!("Failed to import mod: {}", e))?;
+
+    let mod_file = parse_mod_file(&dest)?;
+    let (title, version, author, description) = get_mod_display_info(&mod_file);
+    let patch_count: usize = mod_file.patches.iter().map(|p| p.changes.len()).sum();
+    let game_files: Vec<String> = mod_file.patches.iter().map(|p| p.game_file.clone()).collect();
+
+    Ok(ModEntry {
+        file_name: dest.file_name().unwrap().to_string_lossy().to_string(),
+        title,
+        version,
+        author,
+        description,
+        enabled: false,
+        patch_count,
+        game_files,
+        has_conflicts: false,
+    })
+}
+
+#[tauri::command]
+pub fn delete_mod(mods_path: String, file_name: String) -> Result<(), String> {
+    let mod_path = Path::new(&mods_path).join(&file_name);
+    if !mod_path.exists() {
+        return Err(format!("Mod file not found: {}", file_name));
+    }
+    fs::remove_file(&mod_path)
+        .map_err(|e| format!("Failed to delete {}: {}", file_name, e))?;
+    Ok(())
+}
+
+// --- Language mod support ---
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LangModEntry {
+    pub file_name: String,
+    pub title: String,
+    pub language: String,
+    pub author: String,
+    pub description: String,
+    pub active: bool,
+}
+
+#[tauri::command]
+pub fn scan_lang_mods(mods_path: String, active_lang_mod: Option<String>) -> Result<Vec<LangModEntry>, String> {
+    let lang_dir = Path::new(&mods_path).join("_lang");
+    if !lang_dir.exists() {
+        fs::create_dir_all(&lang_dir)
+            .map_err(|e| format!("Failed to create _lang directory: {}", e))?;
+        return Ok(Vec::new());
+    }
+
+    let mut entries = Vec::new();
+    let read_dir = fs::read_dir(&lang_dir)
+        .map_err(|e| format!("Failed to read _lang directory: {}", e))?;
+
+    for entry in read_dir {
+        let entry = entry.map_err(|e| format!("Dir entry error: {}", e))?;
+        let path = entry.path();
+
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+
+        let file_name = path.file_name().unwrap().to_string_lossy().to_string();
+
+        match parse_mod_file(&path) {
+            Ok(mod_file) => {
+                let (title, _version, author, description) = get_mod_display_info(&mod_file);
+                let language = title.to_lowercase();
+                let active = active_lang_mod.as_deref() == Some(&file_name);
+
+                entries.push(LangModEntry {
+                    file_name,
+                    title,
+                    language,
+                    author,
+                    description,
+                    active,
+                });
+            }
+            Err(e) => {
+                log::warn!("Skipping lang mod {}: {}", file_name, e);
+            }
+        }
+    }
+
+    Ok(entries)
+}
+
+// --- Archive import support ---
+
+#[tauri::command]
+pub fn import_archive(archive_path: String, mods_path: String) -> Result<Vec<String>, String> {
+    let path = Path::new(&archive_path);
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+
+    match ext.as_str() {
+        "zip" => import_zip(&archive_path, &mods_path),
+        _ => Err(format!("Unsupported archive format: .{}", ext)),
+    }
+}
+
+fn import_zip(archive_path: &str, mods_path: &str) -> Result<Vec<String>, String> {
+    let file = fs::File::open(archive_path)
+        .map_err(|e| format!("Failed to open archive: {}", e))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|e| format!("Failed to read ZIP: {}", e))?;
+
+    let mods_dir = Path::new(mods_path);
+    let mut imported = Vec::new();
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)
+            .map_err(|e| format!("Failed to read ZIP entry: {}", e))?;
+
+        let name = file.name().to_string();
+
+        // Only extract .json files and modinfo files to mods root
+        if name.ends_with(".json") && !name.contains('/') {
+            let dest = mods_dir.join(&name);
+            let mut content = Vec::new();
+            file.read_to_end(&mut content)
+                .map_err(|e| format!("Failed to extract {}: {}", name, e))?;
+            fs::write(&dest, &content)
+                .map_err(|e| format!("Failed to write {}: {}", name, e))?;
+            imported.push(name);
+        } else if name.contains('/') {
+            // Extract directory structures (like modinfo folders)
+            let dest = mods_dir.join(&name);
+            if file.is_dir() {
+                fs::create_dir_all(&dest)
+                    .map_err(|e| format!("Failed to create dir {}: {}", name, e))?;
+            } else {
+                if let Some(parent) = dest.parent() {
+                    fs::create_dir_all(parent)
+                        .map_err(|e| format!("Failed to create parent dir: {}", e))?;
+                }
+                let mut content = Vec::new();
+                file.read_to_end(&mut content)
+                    .map_err(|e| format!("Failed to extract {}: {}", name, e))?;
+                fs::write(&dest, &content)
+                    .map_err(|e| format!("Failed to write {}: {}", name, e))?;
+                if name.ends_with(".json") {
+                    imported.push(name);
+                }
+            }
+        }
+    }
+
+    Ok(imported)
+}
+
+// --- Game detection and launch support ---
+
+#[tauri::command]
+pub fn auto_detect_game_path() -> Result<Option<String>, String> {
+    let candidates = [
+        r"C:\Program Files (x86)\Steam\steamapps\common\Crimson Desert",
+        r"C:\Program Files\Steam\steamapps\common\Crimson Desert",
+        r"D:\Steam\steamapps\common\Crimson Desert",
+        r"D:\SteamLibrary\steamapps\common\Crimson Desert",
+        r"E:\Steam\steamapps\common\Crimson Desert",
+        r"E:\SteamLibrary\steamapps\common\Crimson Desert",
+    ];
+
+    for candidate in &candidates {
+        let path = Path::new(candidate);
+        let exe = path.join("bin64").join("CrimsonDesert.exe");
+        if path.exists() && exe.exists() {
+            return Ok(Some(candidate.to_string()));
+        }
+    }
+
+    Ok(None)
+}
+
+#[tauri::command]
+pub fn launch_game(game_path: String) -> Result<(), String> {
+    let exe = Path::new(&game_path).join("bin64").join("CrimsonDesert.exe");
+
+    if !exe.exists() {
+        return Err(format!("Game executable not found: {}", exe.display()));
+    }
+
+    Command::new(&exe)
+        .current_dir(&game_path)
+        .spawn()
+        .map_err(|e| format!("Failed to launch game: {}", e))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn open_folder(folder_path: String) -> Result<(), String> {
+    let path = Path::new(&folder_path);
+    if !path.exists() {
+        return Err(format!("Folder does not exist: {}", folder_path));
+    }
+
+    Command::new("explorer")
+        .arg(&folder_path)
+        .spawn()
+        .map_err(|e| format!("Failed to open folder: {}", e))?;
+
+    Ok(())
+}
+
+// --- PAPGT status support ---
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PapgtStatus {
+    pub exists: bool,
+    pub has_overlay: bool,
+    pub overlay_groups: Vec<String>,
+    pub total_groups: usize,
+}
+
+#[tauri::command]
+pub fn get_papgt_status(game_path: String) -> Result<PapgtStatus, String> {
+    let papgt_path = Path::new(&game_path).join("meta").join("0.papgt");
+
+    if !papgt_path.exists() {
+        return Ok(PapgtStatus {
+            exists: false,
+            has_overlay: false,
+            overlay_groups: Vec::new(),
+            total_groups: 0,
+        });
+    }
+
+    let data = fs::read(&papgt_path)
+        .map_err(|e| format!("Failed to read 0.papgt: {}", e))?;
+
+    if data.len() < 12 {
+        return Ok(PapgtStatus {
+            exists: true,
+            has_overlay: false,
+            overlay_groups: Vec::new(),
+            total_groups: 0,
+        });
+    }
+
+    // Parse PAPGT structure properly
+    let entry_count = data[8] as usize;
+    let entries_start = 12;
+    let entries_end = entries_start + entry_count * 12;
+
+    if data.len() < entries_end + 4 {
+        return Ok(PapgtStatus {
+            exists: true,
+            has_overlay: false,
+            overlay_groups: Vec::new(),
+            total_groups: entry_count,
+        });
+    }
+
+    // Read the names block
+    let names_block_len = u32::from_le_bytes(
+        data[entries_end..entries_end + 4].try_into().unwrap(),
+    ) as usize;
+    let names_start = entries_end + 4;
+    let names_end = names_start + names_block_len;
+
+    if data.len() < names_end {
+        return Ok(PapgtStatus {
+            exists: true,
+            has_overlay: false,
+            overlay_groups: Vec::new(),
+            total_groups: entry_count,
+        });
+    }
+
+    let names_block = &data[names_start..names_end];
+
+    // Extract folder names from entries using their name offsets
+    let mut groups: Vec<String> = Vec::new();
+    for i in 0..entry_count {
+        let base = entries_start + i * 12;
+        let name_offset = u32::from_le_bytes(data[base + 4..base + 8].try_into().unwrap()) as usize;
+
+        if name_offset < names_block.len() {
+            let name_end = names_block[name_offset..]
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(names_block.len() - name_offset);
+            if let Ok(name) = std::str::from_utf8(&names_block[name_offset..name_offset + name_end]) {
+                if !name.is_empty() {
+                    groups.push(name.to_string());
+                }
+            }
+        }
+    }
+
+    let total_groups = groups.len();
+
+    // The 0036 overlay is the custom overlay folder
+    let overlay_groups: Vec<String> = groups
+        .iter()
+        .filter(|g| *g == "0036")
+        .cloned()
+        .collect();
+
+    let has_overlay = !overlay_groups.is_empty();
+
+    Ok(PapgtStatus {
+        exists: true,
+        has_overlay,
+        overlay_groups,
+        total_groups,
+    })
+}
+
+// =============================================================================
+// 1. Mod Profiles
+// =============================================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ModProfile {
+    pub name: String,
+    pub created: String,
+    #[serde(rename = "activeMods")]
+    pub active_mods: Vec<ActiveMod>,
+    #[serde(rename = "activeLangMod")]
+    pub active_lang_mod: Option<String>,
+    #[serde(rename = "selectedLanguage")]
+    pub selected_language: String,
+}
+
+#[tauri::command]
+pub fn save_profile(
+    profile_name: String,
+    config: AppConfig,
+    profiles_dir: String,
+) -> Result<(), String> {
+    let dir = Path::new(&profiles_dir);
+    if !dir.exists() {
+        fs::create_dir_all(dir)
+            .map_err(|e| format!("Failed to create profiles directory: {}", e))?;
+    }
+
+    let profile = ModProfile {
+        name: profile_name.clone(),
+        created: chrono::Local::now().to_rfc3339(),
+        active_mods: config.active_mods,
+        active_lang_mod: config.active_lang_mod,
+        selected_language: config.selected_language,
+    };
+
+    let file_name = format!("{}.json", sanitize_filename(&profile_name));
+    let path = dir.join(&file_name);
+
+    let content = serde_json::to_string_pretty(&profile)
+        .map_err(|e| format!("Failed to serialize profile: {}", e))?;
+    fs::write(&path, content)
+        .map_err(|e| format!("Failed to write profile: {}", e))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn load_profile(
+    profile_name: String,
+    profiles_dir: String,
+) -> Result<ModProfile, String> {
+    let file_name = format!("{}.json", sanitize_filename(&profile_name));
+    let path = Path::new(&profiles_dir).join(&file_name);
+
+    let content = fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read profile '{}': {}", profile_name, e))?;
+    serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse profile '{}': {}", profile_name, e))
+}
+
+#[tauri::command]
+pub fn list_profiles(profiles_dir: String) -> Result<Vec<ModProfile>, String> {
+    let dir = Path::new(&profiles_dir);
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut profiles = Vec::new();
+    let entries = fs::read_dir(dir)
+        .map_err(|e| format!("Failed to read profiles directory: {}", e))?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Dir entry error: {}", e))?;
+        let path = entry.path();
+
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+
+        match fs::read_to_string(&path) {
+            Ok(content) => {
+                if let Ok(profile) = serde_json::from_str::<ModProfile>(&content) {
+                    profiles.push(profile);
+                }
+            }
+            Err(e) => {
+                log::warn!("Skipping profile {}: {}", path.display(), e);
+            }
+        }
+    }
+
+    profiles.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(profiles)
+}
+
+#[tauri::command]
+pub fn delete_profile(
+    profile_name: String,
+    profiles_dir: String,
+) -> Result<(), String> {
+    let file_name = format!("{}.json", sanitize_filename(&profile_name));
+    let path = Path::new(&profiles_dir).join(&file_name);
+
+    if !path.exists() {
+        return Err(format!("Profile '{}' not found", profile_name));
+    }
+
+    fs::remove_file(&path)
+        .map_err(|e| format!("Failed to delete profile '{}': {}", profile_name, e))
+}
+
+/// Sanitize a profile name into a safe filename (no path separators or special chars).
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+// =============================================================================
+// 2. Game Version Tracking
+// =============================================================================
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GameVersion {
+    pub paver_hex: String,
+    pub exe_size: u64,
+    pub exe_modified: String,
+}
+
+#[tauri::command]
+pub fn get_game_version(game_path: String) -> Result<GameVersion, String> {
+    let paver_path = Path::new(&game_path).join("meta").join("0.paver");
+    let exe_path = Path::new(&game_path).join("bin64").join("CrimsonDesert.exe");
+
+    // Read paver as raw bytes and convert to hex
+    let paver_bytes = fs::read(&paver_path)
+        .map_err(|e| format!("Failed to read 0.paver: {}", e))?;
+    let paver_hex = hex::encode(&paver_bytes);
+
+    // Get exe metadata
+    let exe_meta = fs::metadata(&exe_path)
+        .map_err(|e| format!("Failed to read CrimsonDesert.exe metadata: {}", e))?;
+    let exe_size = exe_meta.len();
+
+    let exe_modified = match exe_meta.modified() {
+        Ok(time) => {
+            let datetime: chrono::DateTime<chrono::Local> = time.into();
+            datetime.to_rfc3339()
+        }
+        Err(_) => "unknown".to_string(),
+    };
+
+    Ok(GameVersion {
+        paver_hex,
+        exe_size,
+        exe_modified,
+    })
+}
+
+#[tauri::command]
+pub fn check_version_changed(
+    game_path: String,
+    stored_version: String,
+) -> Result<bool, String> {
+    let current = get_game_version(game_path)?;
+    Ok(current.paver_hex != stored_version)
+}
+
+// =============================================================================
+// 3. Read Mod Readme
+// =============================================================================
+
+#[tauri::command]
+pub fn read_mod_readme(
+    mods_path: String,
+    mod_file_name: String,
+) -> Result<Option<String>, String> {
+    let mods_dir = Path::new(&mods_path);
+
+    // Strip .json extension to get the base mod name
+    let base_name = mod_file_name.trim_end_matches(".json");
+
+    // Extract a prefix to match against folder names (first few words)
+    let prefix = base_name
+        .split(|c: char| !c.is_alphanumeric())
+        .next()
+        .unwrap_or(base_name);
+
+    let entries = fs::read_dir(mods_dir)
+        .map_err(|e| format!("Failed to read mods directory: {}", e))?;
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+
+        if !path.is_dir() {
+            continue;
+        }
+
+        let folder_name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+
+        // Check if this folder name starts with the same prefix as the mod
+        // or matches the base name pattern
+        let folder_matches = folder_name.starts_with(prefix)
+            || base_name
+                .split_whitespace()
+                .take(2)
+                .all(|word| folder_name.contains(word));
+
+        if folder_matches {
+            let readme_path = path.join("readme.txt");
+            if readme_path.exists() {
+                let content = fs::read_to_string(&readme_path)
+                    .map_err(|e| format!("Failed to read readme: {}", e))?;
+                return Ok(Some(content));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+// =============================================================================
+// 4. Nexus Folder Import
+// =============================================================================
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct NexusFolder {
+    pub folder_name: String,
+    pub mod_name: String,
+    pub has_json: bool,
+    pub has_readme: bool,
+}
+
+#[tauri::command]
+pub fn scan_nexus_folders(mods_path: String) -> Result<Vec<NexusFolder>, String> {
+    let mods_dir = Path::new(&mods_path);
+    if !mods_dir.exists() {
+        return Err("Mods directory does not exist".to_string());
+    }
+
+    let mut folders = Vec::new();
+    let entries = fs::read_dir(mods_dir)
+        .map_err(|e| format!("Failed to read mods directory: {}", e))?;
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+
+        if !path.is_dir() {
+            continue;
+        }
+
+        let folder_name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+
+        // Match Nexus format: ModName-123-1-timestamp
+        // Pattern: contains at least one hyphen followed by digits
+        if !is_nexus_folder_name(&folder_name) {
+            continue;
+        }
+
+        // Extract the mod name (everything before the first hyphen-digit sequence)
+        let mod_name = extract_nexus_mod_name(&folder_name);
+
+        // Check for JSON files (excluding modinfo.json)
+        let has_json = fs::read_dir(&path)
+            .map(|entries| {
+                entries.filter_map(|e| e.ok()).any(|e| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    name.ends_with(".json") && name.to_lowercase() != "modinfo.json"
+                })
+            })
+            .unwrap_or(false);
+
+        let has_readme = path.join("readme.txt").exists()
+            || path.join("README.txt").exists()
+            || path.join("Readme.txt").exists();
+
+        folders.push(NexusFolder {
+            folder_name,
+            mod_name,
+            has_json,
+            has_readme,
+        });
+    }
+
+    folders.sort_by(|a, b| a.mod_name.to_lowercase().cmp(&b.mod_name.to_lowercase()));
+    Ok(folders)
+}
+
+/// Check if a folder name matches the Nexus Mods naming pattern.
+/// Pattern: SomeName-<digits>-<digits>-<timestamp>
+fn is_nexus_folder_name(name: &str) -> bool {
+    let parts: Vec<&str> = name.split('-').collect();
+    if parts.len() < 3 {
+        return false;
+    }
+    // At least one part after the first must be purely numeric
+    parts[1..].iter().any(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// Extract the human-readable mod name from a Nexus folder name.
+/// e.g., "Cool Mod Name-123-1-1234567890" -> "Cool Mod Name"
+fn extract_nexus_mod_name(folder_name: &str) -> String {
+    let parts: Vec<&str> = folder_name.split('-').collect();
+    // Find the first part that is purely numeric -- everything before it is the name
+    let mut name_parts = Vec::new();
+    for part in &parts {
+        if !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()) {
+            break;
+        }
+        name_parts.push(*part);
+    }
+    if name_parts.is_empty() {
+        folder_name.to_string()
+    } else {
+        name_parts.join("-")
+    }
+}
+
+#[tauri::command]
+pub fn import_nexus_folder(
+    mods_path: String,
+    folder_name: String,
+) -> Result<Vec<String>, String> {
+    let mods_dir = Path::new(&mods_path);
+    let folder_path = mods_dir.join(&folder_name);
+
+    if !folder_path.exists() || !folder_path.is_dir() {
+        return Err(format!("Nexus folder not found: {}", folder_name));
+    }
+
+    let mut imported = Vec::new();
+    let entries = fs::read_dir(&folder_path)
+        .map_err(|e| format!("Failed to read Nexus folder: {}", e))?;
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        let file_name = entry.file_name().to_string_lossy().to_string();
+
+        // Copy .json files (excluding modinfo.json) to mods root
+        if file_name.ends_with(".json") && file_name.to_lowercase() != "modinfo.json" {
+            let source = entry.path();
+            let dest = mods_dir.join(&file_name);
+
+            fs::copy(&source, &dest)
+                .map_err(|e| format!("Failed to copy {}: {}", file_name, e))?;
+            imported.push(file_name);
+        }
+    }
+
+    Ok(imported)
+}
+
+// =============================================================================
+// 5. Export/Import Mod List
+// =============================================================================
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExportedModList {
+    pub format_version: u32,
+    #[serde(rename = "activeMods")]
+    pub active_mods: Vec<ActiveMod>,
+    #[serde(rename = "activeLangMod")]
+    pub active_lang_mod: Option<String>,
+    #[serde(rename = "selectedLanguage")]
+    pub selected_language: String,
+    #[serde(rename = "modHashes")]
+    pub mod_hashes: HashMap<String, String>,
+    pub exported_at: String,
+}
+
+#[tauri::command]
+pub fn export_mod_list(
+    config: AppConfig,
+    export_path: String,
+) -> Result<(), String> {
+    // Compute SHA-256 hashes for each active mod file
+    let mut mod_hashes = HashMap::new();
+    let mods_dir = Path::new(&config.mods_path);
+
+    for active_mod in &config.active_mods {
+        let mod_path = mods_dir.join(&active_mod.file_name);
+        if mod_path.exists() {
+            match fs::read(&mod_path) {
+                Ok(data) => {
+                    let mut hasher = Sha256::new();
+                    hasher.update(&data);
+                    let hash = format!("{:x}", hasher.finalize());
+                    mod_hashes.insert(active_mod.file_name.clone(), hash);
+                }
+                Err(e) => {
+                    log::warn!("Could not hash {}: {}", active_mod.file_name, e);
+                }
+            }
+        }
+    }
+
+    let export = ExportedModList {
+        format_version: 1,
+        active_mods: config.active_mods,
+        active_lang_mod: config.active_lang_mod,
+        selected_language: config.selected_language,
+        mod_hashes,
+        exported_at: chrono::Local::now().to_rfc3339(),
+    };
+
+    let content = serde_json::to_string_pretty(&export)
+        .map_err(|e| format!("Failed to serialize mod list: {}", e))?;
+    fs::write(&export_path, content)
+        .map_err(|e| format!("Failed to write export file: {}", e))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn import_mod_list(import_path: String) -> Result<ExportedModList, String> {
+    let content = fs::read_to_string(&import_path)
+        .map_err(|e| format!("Failed to read mod list file: {}", e))?;
+    serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse mod list file: {}", e))
+}
+
+// =============================================================================
+// 6. Backup Manager
+// =============================================================================
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BackupInfo {
+    pub file_name: String,
+    pub game_file: String,
+    pub size: u64,
+    pub created: String,
+}
+
+#[tauri::command]
+pub fn list_backups(backup_dir: String) -> Result<Vec<BackupInfo>, String> {
+    let dir = Path::new(&backup_dir);
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut backups = Vec::new();
+    let entries = fs::read_dir(dir)
+        .map_err(|e| format!("Failed to read backup directory: {}", e))?;
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) if n.ends_with(".original") => n.to_string(),
+            _ => continue,
+        };
+
+        let game_file = name
+            .trim_end_matches(".original")
+            .replace('_', "/");
+
+        let meta = match fs::metadata(&path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+
+        let created = match meta.modified() {
+            Ok(time) => {
+                let datetime: chrono::DateTime<chrono::Local> = time.into();
+                datetime.to_rfc3339()
+            }
+            Err(_) => "unknown".to_string(),
+        };
+
+        backups.push(BackupInfo {
+            file_name: name,
+            game_file,
+            size: meta.len(),
+            created,
+        });
+    }
+
+    backups.sort_by(|a, b| a.game_file.cmp(&b.game_file));
+    Ok(backups)
+}
+
+#[tauri::command]
+pub fn delete_backup(
+    backup_dir: String,
+    file_name: String,
+) -> Result<(), String> {
+    let path = Path::new(&backup_dir).join(&file_name);
+
+    if !path.exists() {
+        return Err(format!("Backup file not found: {}", file_name));
+    }
+
+    // Safety: ensure the file is actually inside the backup directory
+    let canonical_dir = fs::canonicalize(&backup_dir)
+        .map_err(|e| format!("Invalid backup directory: {}", e))?;
+    let canonical_file = fs::canonicalize(&path)
+        .map_err(|e| format!("Invalid backup file path: {}", e))?;
+
+    if !canonical_file.starts_with(&canonical_dir) {
+        return Err("Path traversal detected".to_string());
+    }
+
+    fs::remove_file(&path)
+        .map_err(|e| format!("Failed to delete backup: {}", e))
+}
+
+#[tauri::command]
+pub fn restore_single_backup(
+    game_path: String,
+    backup_dir: String,
+    file_name: String,
+) -> Result<(), String> {
+    let backup_file = Path::new(&backup_dir).join(&file_name);
+
+    if !backup_file.exists() {
+        return Err(format!("Backup file not found: {}", file_name));
+    }
+
+    // Derive the game file path from the backup file name
+    let game_file = file_name
+        .trim_end_matches(".original")
+        .replace('_', "/");
+
+    let target = Path::new(&game_path).join(&game_file);
+
+    if let Some(parent) = target.parent() {
+        if !parent.exists() {
+            return Err(format!(
+                "Game directory does not exist: {}",
+                parent.display()
+            ));
+        }
+    }
+
+    fs::copy(&backup_file, &target)
+        .map_err(|e| format!("Failed to restore {}: {}", game_file, e))?;
+
+    Ok(())
+}
+
+// =============================================================================
+// 7. Pre-flight Check
+// =============================================================================
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PreflightResult {
+    pub passed: bool,
+    pub checks: Vec<PreflightCheck>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PreflightCheck {
+    pub name: String,
+    pub passed: bool,
+    pub message: String,
+}
+
+#[tauri::command]
+pub fn preflight_check(
+    game_path: String,
+    mods_path: String,
+    active_mods: Vec<ActiveMod>,
+) -> Result<PreflightResult, String> {
+    let mut checks: Vec<PreflightCheck> = Vec::new();
+
+    // 1. Check game path and executable
+    let exe_path = Path::new(&game_path).join("bin64").join("CrimsonDesert.exe");
+    let exe_exists = exe_path.exists();
+    checks.push(PreflightCheck {
+        name: "Game executable".to_string(),
+        passed: exe_exists,
+        message: if exe_exists {
+            "bin64/CrimsonDesert.exe found".to_string()
+        } else {
+            format!("bin64/CrimsonDesert.exe not found at {}", game_path)
+        },
+    });
+
+    // 2. Check each mod's target game files exist
+    let mods_dir = Path::new(&mods_path);
+    let mut all_game_files_ok = true;
+    let mut missing_files: Vec<String> = Vec::new();
+
+    // Also collect data for conflict and bounds checking
+    let mut offset_map: HashMap<(String, u64), Vec<String>> = HashMap::new();
+    let mut bounds_errors: Vec<String> = Vec::new();
+
+    for active_mod in &active_mods {
+        let mod_path = mods_dir.join(&active_mod.file_name);
+        match parse_mod_file(&mod_path) {
+            Ok(mod_file) => {
+                let (title, _, _, _) = get_mod_display_info(&mod_file);
+
+                for patch in &mod_file.patches {
+                    // game_file paths like "gamedata/storeinfo.pabgb" are virtual
+                    // references into PAZ archives, not literal files on disk.
+                    // Skip file existence and bounds checks for these — they'll be
+                    // resolved through the PAZ overlay system during mount.
+                    let game_file_path = Path::new(&game_path).join(&patch.game_file);
+                    let is_virtual = patch.game_file.starts_with("gamedata/")
+                        || patch.game_file.ends_with(".pabgb");
+
+                    if !is_virtual && !game_file_path.exists() {
+                        all_game_files_ok = false;
+                        let msg = format!("{} (needed by {})", patch.game_file, title);
+                        if !missing_files.contains(&msg) {
+                            missing_files.push(msg);
+                        }
+                        continue;
+                    }
+
+                    if is_virtual {
+                        // Skip bounds checking for virtual PAZ paths
+                        // Collect conflict data but don't check file existence
+                        for (idx, change) in patch.changes.iter().enumerate() {
+                            if !active_mod.disabled_indices.contains(&idx) {
+                                let key = (patch.game_file.clone(), change.offset);
+                                offset_map.entry(key).or_default().push(title.clone());
+                            }
+                        }
+                        continue;
+                    }
+
+                    // 3. Bounds checking (only for real files)
+                    let file_size = match fs::metadata(&game_file_path) {
+                        Ok(m) => m.len(),
+                        Err(_) => continue,
+                    };
+
+                    for (idx, change) in patch.changes.iter().enumerate() {
+                        if active_mod.disabled_indices.contains(&idx) {
+                            continue;
+                        }
+
+                        let patched_len = change.patched.len() / 2; // hex string -> byte count
+                        if change.offset + patched_len as u64 > file_size {
+                            bounds_errors.push(format!(
+                                "{}: offset {} + {} bytes exceeds {} size ({} bytes)",
+                                title,
+                                change.offset,
+                                patched_len,
+                                patch.game_file,
+                                file_size
+                            ));
+                        }
+
+                        // Collect for conflict check
+                        let key = (patch.game_file.clone(), change.offset);
+                        offset_map
+                            .entry(key)
+                            .or_default()
+                            .push(title.clone());
+                    }
+                }
+            }
+            Err(e) => {
+                checks.push(PreflightCheck {
+                    name: format!("Parse mod: {}", active_mod.file_name),
+                    passed: false,
+                    message: format!("Failed to parse: {}", e),
+                });
+            }
+        }
+    }
+
+    // Game files check result
+    checks.push(PreflightCheck {
+        name: "Game files exist".to_string(),
+        passed: all_game_files_ok,
+        message: if all_game_files_ok {
+            "All target game files found".to_string()
+        } else {
+            format!("Missing: {}", missing_files.join(", "))
+        },
+    });
+
+    // 3. Bounds check result
+    let bounds_ok = bounds_errors.is_empty();
+    checks.push(PreflightCheck {
+        name: "Offset bounds".to_string(),
+        passed: bounds_ok,
+        message: if bounds_ok {
+            "All offsets are within file bounds".to_string()
+        } else {
+            format!("{} out-of-bounds: {}", bounds_errors.len(), bounds_errors.join("; "))
+        },
+    });
+
+    // 4. Conflict check
+    let conflicts: Vec<String> = offset_map
+        .iter()
+        .filter(|(_, mods)| mods.len() > 1)
+        .map(|((file, offset), mods)| {
+            let unique_mods: Vec<String> = {
+                let mut seen = Vec::new();
+                for m in mods {
+                    if !seen.contains(m) {
+                        seen.push(m.clone());
+                    }
+                }
+                seen
+            };
+            format!(
+                "{} @ offset {}: {}",
+                file,
+                offset,
+                unique_mods.join(" vs ")
+            )
+        })
+        .collect();
+
+    let no_conflicts = conflicts.is_empty();
+    checks.push(PreflightCheck {
+        name: "Mod conflicts".to_string(),
+        passed: no_conflicts,
+        message: if no_conflicts {
+            "No conflicting offsets detected".to_string()
+        } else {
+            format!("{} conflict(s): {}", conflicts.len(), conflicts.join("; "))
+        },
+    });
+
+    // 5. Backup directory writable
+    let backup_dir = Path::new(&game_path)
+        .parent()
+        .unwrap_or_else(|| Path::new(&game_path))
+        .join("mod_backups");
+    // Try the standard backup location next to the mods path
+    let backup_dir_alt = Path::new(&mods_path).join("..").join("backups");
+    let backup_writable = test_dir_writable(&backup_dir)
+        || test_dir_writable(&backup_dir_alt);
+
+    checks.push(PreflightCheck {
+        name: "Backup directory".to_string(),
+        passed: backup_writable,
+        message: if backup_writable {
+            "Backup directory is writable".to_string()
+        } else {
+            "Cannot write to backup directory".to_string()
+        },
+    });
+
+    let passed = checks.iter().all(|c| c.passed);
+
+    Ok(PreflightResult { passed, checks })
+}
+
+/// Test whether a directory exists (or can be created) and is writable.
+fn test_dir_writable(dir: &Path) -> bool {
+    if !dir.exists() {
+        if fs::create_dir_all(dir).is_err() {
+            return false;
+        }
+    }
+
+    let test_file = dir.join(".write_test");
+    match fs::write(&test_file, b"test") {
+        Ok(_) => {
+            let _ = fs::remove_file(&test_file);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+// =============================================================================
+// 8. Recover Interrupted Apply
+// =============================================================================
+
+/// Internal struct representing the state.json written during apply operations.
+#[derive(Debug, Serialize, Deserialize)]
+struct ApplyState {
+    applied_mods: Vec<String>,
+    game_version_id: Option<String>,
+    timestamp: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RecoverResult {
+    pub was_interrupted: bool,
+    pub files_restored: Vec<String>,
+    pub errors: Vec<String>,
+    pub message: String,
+}
+
+#[tauri::command]
+pub fn recover_interrupted(
+    game_path: String,
+    backup_dir: String,
+) -> Result<RecoverResult, String> {
+    let backup_path = Path::new(&backup_dir);
+    let state_path = backup_path.join("state.json");
+
+    // Check if state.json exists — indicates a previous apply was in progress
+    let has_state = state_path.exists();
+
+    // Check if any .original backup files exist
+    let has_backups = if backup_path.exists() {
+        fs::read_dir(backup_path)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .any(|e| {
+                        e.file_name()
+                            .to_string_lossy()
+                            .ends_with(".original")
+                    })
+            })
+            .unwrap_or(false)
+    } else {
+        false
+    };
+
+    if !has_state && !has_backups {
+        return Ok(RecoverResult {
+            was_interrupted: false,
+            files_restored: Vec::new(),
+            errors: Vec::new(),
+            message: "No interrupted operation detected".to_string(),
+        });
+    }
+
+    let mut files_restored = Vec::new();
+    let mut errors = Vec::new();
+
+    // Restore all .original backup files to their game file locations
+    if backup_path.exists() {
+        let entries = fs::read_dir(backup_path)
+            .map_err(|e| format!("Failed to read backup dir: {}", e))?;
+
+        for entry in entries {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(e) => {
+                    errors.push(format!("Entry error: {}", e));
+                    continue;
+                }
+            };
+
+            let path = entry.path();
+            let name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(n) if n.ends_with(".original") => n.to_string(),
+                _ => continue,
+            };
+
+            let game_file = name
+                .trim_end_matches(".original")
+                .replace('_', "/");
+
+            let target = Path::new(&game_path).join(&game_file);
+
+            match fs::copy(&path, &target) {
+                Ok(_) => {
+                    files_restored.push(game_file);
+                }
+                Err(e) => {
+                    errors.push(format!("Failed to restore {}: {}", game_file, e));
+                }
+            }
+        }
+    }
+
+    // Delete state.json after recovery
+    if state_path.exists() {
+        if let Err(e) = fs::remove_file(&state_path) {
+            errors.push(format!("Failed to delete state.json: {}", e));
+        }
+    }
+
+    let message = if files_restored.is_empty() && errors.is_empty() {
+        "State file found but no backup files to restore".to_string()
+    } else if errors.is_empty() {
+        format!("Recovered {} file(s) successfully", files_restored.len())
+    } else {
+        format!(
+            "Recovered {} file(s) with {} error(s)",
+            files_restored.len(),
+            errors.len()
+        )
+    };
+
+    Ok(RecoverResult {
+        was_interrupted: has_state,
+        files_restored,
+        errors,
+        message,
+    })
+}
+
+// =============================================================================
+// 9. Detailed Check (Pre-mount Diagnostic)
+// =============================================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DetailedCheckResult {
+    pub timestamp: String,
+    pub game_dir_ok: bool,
+    pub interrupted_apply: bool,
+    pub version_mismatch: bool,
+    pub current_version: String,
+    pub saved_version: String,
+    pub conflicts: Vec<ConflictInfo>,
+    pub can_apply: bool,
+    pub stale_backup: bool,
+    pub mod_file_issues: Vec<String>,
+    pub total_patches: usize,
+    pub target_files: Vec<String>,
+}
+
+#[tauri::command]
+pub fn detailed_check(
+    game_path: String,
+    mods_path: String,
+    active_mods: Vec<ActiveMod>,
+    backup_dir: String,
+) -> Result<DetailedCheckResult, String> {
+    let game_dir = Path::new(&game_path);
+    let backup_path = Path::new(&backup_dir);
+    let mods_dir = Path::new(&mods_path);
+
+    // 1. Check game dir exists with bin64/CrimsonDesert.exe
+    let exe_path = game_dir.join("bin64").join("CrimsonDesert.exe");
+    let game_dir_ok = game_dir.exists() && exe_path.exists();
+
+    // 2. Check for interrupted apply (state.json exists with applied_mods)
+    let state_path = backup_path.join("state.json");
+    let interrupted_apply = if state_path.exists() {
+        match fs::read_to_string(&state_path) {
+            Ok(content) => {
+                serde_json::from_str::<ApplyState>(&content)
+                    .map(|s| !s.applied_mods.is_empty())
+                    .unwrap_or(false)
+            }
+            Err(_) => false,
+        }
+    } else {
+        false
+    };
+
+    // 3. Read 0.paver as hex for current version; read state.json for saved game_version_id
+    let paver_path = game_dir.join("meta").join("0.paver");
+    let current_version = if paver_path.exists() {
+        fs::read(&paver_path)
+            .map(|bytes| hex::encode(&bytes))
+            .unwrap_or_else(|_| "unreadable".to_string())
+    } else {
+        "not found".to_string()
+    };
+
+    let saved_version = if state_path.exists() {
+        match fs::read_to_string(&state_path) {
+            Ok(content) => {
+                serde_json::from_str::<ApplyState>(&content)
+                    .ok()
+                    .and_then(|s| s.game_version_id)
+                    .unwrap_or_else(|| "none".to_string())
+            }
+            Err(_) => "none".to_string(),
+        }
+    } else {
+        "none".to_string()
+    };
+
+    let version_mismatch = saved_version != "none"
+        && current_version != "not found"
+        && current_version != "unreadable"
+        && current_version != saved_version;
+
+    // 4. Check if backup 0.papgt.original exists and compare size to current meta/0.papgt
+    let papgt_backup = backup_path.join("meta_0.papgt.original");
+    let papgt_current = game_dir.join("meta").join("0.papgt");
+    let stale_backup = if papgt_backup.exists() && papgt_current.exists() {
+        let backup_size = fs::metadata(&papgt_backup).map(|m| m.len()).unwrap_or(0);
+        let current_size = fs::metadata(&papgt_current).map(|m| m.len()).unwrap_or(0);
+        backup_size != current_size
+    } else {
+        false
+    };
+
+    // 5. Check all active mod JSON files exist and are parseable
+    let mut mod_file_issues = Vec::new();
+    let mut total_patches: usize = 0;
+    let mut target_files_set: Vec<String> = Vec::new();
+
+    // For conflict detection — reuse check_conflicts logic
+    let mut offset_map: HashMap<(String, u64), Vec<(String, String)>> = HashMap::new();
+
+    for active_mod in &active_mods {
+        let mod_path = mods_dir.join(&active_mod.file_name);
+
+        if !mod_path.exists() {
+            mod_file_issues.push(format!("{}: file not found", active_mod.file_name));
+            continue;
+        }
+
+        match parse_mod_file(&mod_path) {
+            Ok(mod_file) => {
+                let (title, _, _, _) = get_mod_display_info(&mod_file);
+
+                for patch in &mod_file.patches {
+                    // 6. Count total patches
+                    total_patches += patch.changes.len();
+
+                    // 7. Collect unique target game files
+                    if !target_files_set.contains(&patch.game_file) {
+                        target_files_set.push(patch.game_file.clone());
+                    }
+
+                    // 8. Collect for conflict detection
+                    for change in &patch.changes {
+                        let key = (patch.game_file.clone(), change.offset);
+                        offset_map
+                            .entry(key)
+                            .or_default()
+                            .push((title.clone(), change.label.clone()));
+                    }
+                }
+            }
+            Err(e) => {
+                mod_file_issues.push(format!("{}: {}", active_mod.file_name, e));
+            }
+        }
+    }
+
+    // Build conflict list
+    let conflicts: Vec<ConflictInfo> = offset_map
+        .into_iter()
+        .filter(|(_, mods)| mods.len() > 1)
+        .map(|((game_file, offset), mods)| ConflictInfo {
+            offset,
+            game_file,
+            mods: mods.iter().map(|(name, _)| name.clone()).collect(),
+            labels: mods.iter().map(|(_, label)| label.clone()).collect(),
+        })
+        .collect();
+
+    // 9. can_apply = game_dir_ok && mod_file_issues.is_empty()
+    let can_apply = game_dir_ok && mod_file_issues.is_empty();
+
+    target_files_set.sort();
+
+    Ok(DetailedCheckResult {
+        timestamp: chrono::Local::now().to_rfc3339(),
+        game_dir_ok,
+        interrupted_apply,
+        version_mismatch,
+        current_version,
+        saved_version,
+        conflicts,
+        can_apply,
+        stale_backup,
+        mod_file_issues,
+        total_patches,
+        target_files: target_files_set,
+    })
+}
+
+// =============================================================================
+// Nexus Mods API Integration
+// =============================================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NexusIdMapping {
+    pub file_name: String,
+    pub nexus_mod_id: u64,
+    pub folder_name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ModUpdateStatus {
+    pub file_name: String,
+    pub nexus_mod_id: Option<u64>,
+    pub local_version: String,
+    pub nexus_version: Option<String>,
+    pub is_outdated: bool,
+    pub nexus_url: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Scan the mods directory for Nexus-style folder names (Name-{modId}-{fileVersion}-{timestamp})
+/// and match them to mod JSON files by comparing folder name prefixes.
+#[tauri::command]
+pub fn parse_nexus_mod_ids(mods_path: String) -> Result<Vec<NexusIdMapping>, String> {
+    let mods_dir = Path::new(&mods_path);
+    if !mods_dir.exists() {
+        return Err("Mods directory does not exist".to_string());
+    }
+
+    let mut mappings: Vec<NexusIdMapping> = Vec::new();
+
+    // Collect all JSON mod files in the mods directory
+    let json_files: Vec<String> = fs::read_dir(mods_dir)
+        .map_err(|e| format!("Failed to read mods directory: {}", e))?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry.path().extension()
+                .map(|ext| ext.to_string_lossy().to_lowercase() == "json")
+                .unwrap_or(false)
+        })
+        .filter_map(|entry| entry.file_name().to_str().map(String::from))
+        .collect();
+
+    // Scan for Nexus-style subdirectories
+    let entries = fs::read_dir(mods_dir)
+        .map_err(|e| format!("Failed to read mods directory: {}", e))?;
+
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let folder_name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(name) => name.to_string(),
+            None => continue,
+        };
+
+        // Match pattern: Name-{digits}-{digits}-{digits}
+        // The mod ID is the second group from the end (second-to-last number)
+        let parts: Vec<&str> = folder_name.rsplitn(4, '-').collect();
+        if parts.len() < 4 {
+            continue;
+        }
+
+        // parts[0] = timestamp, parts[1] = file version, parts[2] = mod id, parts[3] = name prefix
+        let timestamp_ok = parts[0].chars().all(|c| c.is_ascii_digit()) && !parts[0].is_empty();
+        let version_ok = parts[1].chars().all(|c| c.is_ascii_digit()) && !parts[1].is_empty();
+        let mod_id_str = parts[2];
+        let mod_id_ok = mod_id_str.chars().all(|c| c.is_ascii_digit()) && !mod_id_str.is_empty();
+
+        if !timestamp_ok || !version_ok || !mod_id_ok {
+            continue;
+        }
+
+        let mod_id: u64 = match mod_id_str.parse() {
+            Ok(id) => id,
+            Err(_) => continue,
+        };
+
+        // Try to match this folder to a JSON file
+        // The folder name prefix (before the numbers) should loosely match a JSON filename
+        let name_prefix = parts[3].to_lowercase().replace(' ', "").replace('_', "");
+
+        let mut matched_file: Option<String> = None;
+
+        // First: check if there's a JSON file inside the folder itself
+        if let Ok(folder_entries) = fs::read_dir(&path) {
+            for fe in folder_entries.filter_map(|e| e.ok()) {
+                let fe_path = fe.path();
+                if fe_path.extension().map(|ext| ext.to_string_lossy().to_lowercase() == "json").unwrap_or(false) {
+                    if let Some(fname) = fe_path.file_name().and_then(|n| n.to_str()) {
+                        matched_file = Some(fname.to_string());
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Second: try matching against root-level JSON files by name similarity
+        if matched_file.is_none() {
+            for json_file in &json_files {
+                let json_stem = json_file.trim_end_matches(".json").to_lowercase().replace(' ', "").replace('_', "");
+                if json_stem.contains(&name_prefix) || name_prefix.contains(&json_stem) {
+                    matched_file = Some(json_file.clone());
+                    break;
+                }
+            }
+        }
+
+        if let Some(file_name) = matched_file {
+            mappings.push(NexusIdMapping {
+                file_name,
+                nexus_mod_id: mod_id,
+                folder_name: folder_name.clone(),
+            });
+        }
+    }
+
+    Ok(mappings)
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NexusCacheEntry {
+    pub file_name: String,
+    pub nexus_mod_id: u64,
+    pub nexus_name: String,
+    pub last_checked: String,
+}
+
+fn load_nexus_cache_internal(_mods_path: &str) -> Vec<NexusCacheEntry> {
+    Vec::new()
+}
+
+/// Check for mod updates by querying the Nexus Mods API for each mapped mod.
+#[tauri::command]
+pub fn check_mod_updates(
+    api_key: String,
+    mod_ids: Vec<NexusIdMapping>,
+    mods_path: String,
+) -> Result<Vec<ModUpdateStatus>, String> {
+    Err("Nexus API calls disabled in this build".to_string())
+}
+
+
+#[tauri::command]
+pub fn search_nexus_by_name(
+    _api_key: String,
+    mod_name: String,
+    mods_path: String,
+) -> Result<Option<NexusCacheEntry>, String> {
+    Err("Nexus API calls disabled in this build".to_string())
+}
+
+
+#[tauri::command]
+pub fn search_all_unmatched_mods(
+    api_key: String,
+    mods_path: String,
+    known_mappings: Vec<NexusIdMapping>,
+) -> Result<Vec<NexusIdMapping>, String> {
+    Ok(Vec::new())
+}
+
+
+#[tauri::command]
+pub fn load_nexus_cache(mods_path: String) -> Result<Vec<NexusCacheEntry>, String> {
+    Ok(load_nexus_cache_internal(&mods_path))
+}
+
+// ─── ReShade Support ───────────────────────────────────────────────────────────
+
+const RESHADE_DLL_NAMES: &[&str] = &["dxgi.dll", "d3d12.dll", "opengl32.dll", "d3d11.dll", "d3d9.dll"];
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ReshadePreset {
+    pub name: String,
+    pub file_name: String,
+    pub is_active: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ReshadeStatus {
+    pub installed: bool,
+    pub enabled: bool,
+    pub dll_name: Option<String>,
+    pub has_config: bool,
+    pub active_preset: Option<String>,
+    pub presets: Vec<ReshadePreset>,
+    pub shader_count: usize,
+}
+
+fn detect_reshade_dll(bin64: &Path) -> Option<(String, bool)> {
+    // Check enabled DLLs first
+    for &name in RESHADE_DLL_NAMES {
+        let path = bin64.join(name);
+        if path.exists() {
+            // Verify it's actually ReShade: check for reshade.ini or file size > 1MB
+            let reshade_ini = bin64.join("reshade.ini");
+            if reshade_ini.exists() {
+                return Some((name.to_string(), true));
+            }
+            if let Ok(meta) = fs::metadata(&path) {
+                if meta.len() > 1_000_000 {
+                    return Some((name.to_string(), true));
+                }
+            }
+        }
+    }
+    // Check disabled variants
+    for &name in RESHADE_DLL_NAMES {
+        let disabled_name = format!("{}.disabled", name);
+        let path = bin64.join(&disabled_name);
+        if path.exists() {
+            return Some((name.to_string(), false));
+        }
+    }
+    None
+}
+
+fn read_active_preset(bin64: &Path) -> Option<String> {
+    let ini_path = bin64.join("reshade.ini");
+    if let Ok(content) = fs::read_to_string(&ini_path) {
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("PresetPath=") {
+                let value = trimmed["PresetPath=".len()..].trim();
+                if !value.is_empty() {
+                    // Extract just the filename from the path
+                    let preset_path = Path::new(value);
+                    return Some(
+                        preset_path
+                            .file_name()
+                            .map(|f| f.to_string_lossy().to_string())
+                            .unwrap_or_else(|| value.to_string()),
+                    );
+                }
+            }
+        }
+    }
+    None
+}
+
+fn scan_reshade_presets(bin64: &Path, active_preset: &Option<String>) -> Vec<ReshadePreset> {
+    let mut presets = Vec::new();
+    if let Ok(entries) = fs::read_dir(bin64) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let lower = name.to_lowercase();
+            if lower.ends_with(".ini") && lower != "reshade.ini" {
+                // Check if this looks like a preset (contains shader-related content)
+                let is_preset = if let Ok(content) = fs::read_to_string(entry.path()) {
+                    content.contains("[GENERAL]")
+                        || content.contains("Techniques=")
+                        || content.contains("TechniqueSorting=")
+                        || content.contains("[DEPTH]")
+                        || content.contains("PreprocessorDefinitions=")
+                } else {
+                    false
+                };
+                if is_preset {
+                    let is_active = active_preset
+                        .as_ref()
+                        .map(|ap| ap.to_lowercase() == name.to_lowercase())
+                        .unwrap_or(false);
+                    presets.push(ReshadePreset {
+                        name: name[..name.len() - 4].to_string(),
+                        file_name: name,
+                        is_active,
+                    });
+                }
+            }
+        }
+    }
+    presets.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    presets
+}
+
+fn count_shaders(bin64: &Path) -> usize {
+    let shader_dir = bin64.join("reshade-shaders").join("Shaders");
+    if !shader_dir.exists() {
+        return 0;
+    }
+    let mut count = 0;
+    if let Ok(entries) = fs::read_dir(&shader_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.to_lowercase().ends_with(".fx") {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+#[tauri::command]
+pub fn scan_reshade(game_path: String) -> Result<ReshadeStatus, String> {
+    let bin64 = Path::new(&game_path).join("bin64");
+    if !bin64.exists() {
+        return Ok(ReshadeStatus {
+            installed: false,
+            enabled: false,
+            dll_name: None,
+            has_config: false,
+            active_preset: None,
+            presets: vec![],
+            shader_count: 0,
+        });
+    }
+
+    let detection = detect_reshade_dll(&bin64);
+    let has_config = bin64.join("reshade.ini").exists();
+
+    match detection {
+        Some((dll_name, enabled)) => {
+            let active_preset = read_active_preset(&bin64);
+            let presets = scan_reshade_presets(&bin64, &active_preset);
+            let shader_count = count_shaders(&bin64);
+
+            Ok(ReshadeStatus {
+                installed: true,
+                enabled,
+                dll_name: Some(dll_name),
+                has_config,
+                active_preset,
+                presets,
+                shader_count,
+            })
+        }
+        None => Ok(ReshadeStatus {
+            installed: false,
+            enabled: false,
+            dll_name: None,
+            has_config,
+            active_preset: None,
+            presets: vec![],
+            shader_count: 0,
+        }),
+    }
+}
+
+#[tauri::command]
+pub fn toggle_reshade(game_path: String, enable: bool) -> Result<(), String> {
+    let bin64 = Path::new(&game_path).join("bin64");
+    if !bin64.exists() {
+        return Err("bin64 directory not found".to_string());
+    }
+
+    // Find the ReShade DLL (enabled or disabled)
+    for &name in RESHADE_DLL_NAMES {
+        let enabled_path = bin64.join(name);
+        let disabled_path = bin64.join(format!("{}.disabled", name));
+
+        if enable && disabled_path.exists() {
+            fs::rename(&disabled_path, &enabled_path)
+                .map_err(|e| format!("Failed to enable ReShade: {}", e))?;
+            return Ok(());
+        } else if !enable && enabled_path.exists() {
+            // Verify it's actually ReShade before renaming
+            let reshade_ini = bin64.join("reshade.ini");
+            let is_reshade = reshade_ini.exists()
+                || fs::metadata(&enabled_path)
+                    .map(|m| m.len() > 1_000_000)
+                    .unwrap_or(false);
+            if is_reshade {
+                fs::rename(&enabled_path, &disabled_path)
+                    .map_err(|e| format!("Failed to disable ReShade: {}", e))?;
+                return Ok(());
+            }
+        }
+    }
+
+    Err("ReShade DLL not found".to_string())
+}
+
+#[tauri::command]
+pub fn set_reshade_preset(game_path: String, preset_name: String) -> Result<(), String> {
+    let bin64 = Path::new(&game_path).join("bin64");
+    let ini_path = bin64.join("reshade.ini");
+
+    if !ini_path.exists() {
+        return Err("reshade.ini not found".to_string());
+    }
+
+    let content = fs::read_to_string(&ini_path)
+        .map_err(|e| format!("Failed to read reshade.ini: {}", e))?;
+
+    // Build the new preset path relative to bin64
+    let new_preset_path = format!(".\\{}", preset_name);
+
+    let mut found = false;
+    let new_content: String = content
+        .lines()
+        .map(|line| {
+            if line.trim().starts_with("PresetPath=") {
+                found = true;
+                format!("PresetPath={}", new_preset_path)
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let final_content = if found {
+        new_content
+    } else {
+        // If PresetPath not found, add it under [GENERAL] or at the top
+        if content.contains("[GENERAL]") {
+            content
+                .lines()
+                .map(|line| {
+                    if line.trim() == "[GENERAL]" {
+                        format!("{}\nPresetPath={}", line, new_preset_path)
+                    } else {
+                        line.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            format!("PresetPath={}\n{}", new_preset_path, content)
+        }
+    };
+
+    fs::write(&ini_path, final_content)
+        .map_err(|e| format!("Failed to write reshade.ini: {}", e))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn open_reshade_config(game_path: String) -> Result<(), String> {
+    let bin64 = Path::new(&game_path).join("bin64");
+    let ini_path = bin64.join("reshade.ini");
+
+    if !ini_path.exists() {
+        return Err("reshade.ini not found in bin64/".to_string());
+    }
+
+    Command::new("cmd")
+        .args(["/c", "start", "", &ini_path.to_string_lossy()])
+        .spawn()
+        .map_err(|e| format!("Failed to open config: {}", e))?;
+
+    Ok(())
+}
+
+// ─── ASI / DLL Mod Support ─────────────────────────────────────────────────────
+
+const ASI_LOADER_NAMES: &[&str] = &["winmm.dll", "version.dll", "dinput8.dll", "dsound.dll"];
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AsiPlugin {
+    pub name: String,
+    pub file_name: String,
+    pub enabled: bool,
+    pub has_ini: bool,
+    pub ini_path: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AsiStatus {
+    pub has_loader: bool,
+    pub loader_name: Option<String>,
+    pub plugins: Vec<AsiPlugin>,
+}
+
+#[tauri::command]
+pub fn scan_asi_mods(game_path: String) -> Result<AsiStatus, String> {
+    let bin64 = Path::new(&game_path).join("bin64");
+    if !bin64.exists() {
+        return Ok(AsiStatus {
+            has_loader: false,
+            loader_name: None,
+            plugins: vec![],
+        });
+    }
+
+    // Check for ASI loader
+    let mut has_loader = false;
+    let mut loader_name: Option<String> = None;
+    for &name in ASI_LOADER_NAMES {
+        if bin64.join(name).exists() {
+            has_loader = true;
+            loader_name = Some(name.to_string());
+            break;
+        }
+    }
+
+    // Scan for .asi and .asi.disabled files
+    let mut plugins: Vec<AsiPlugin> = Vec::new();
+    let entries = fs::read_dir(&bin64).map_err(|e| format!("Failed to read bin64: {}", e))?;
+
+    for entry in entries.flatten() {
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        let lower = file_name.to_lowercase();
+
+        if lower.ends_with(".asi.disabled") {
+            let base_name = file_name[..file_name.len() - ".asi.disabled".len()].to_string();
+            let ini_path = find_asi_ini(&bin64, &base_name);
+            plugins.push(AsiPlugin {
+                name: base_name,
+                file_name: file_name.clone(),
+                enabled: false,
+                has_ini: ini_path.is_some(),
+                ini_path: ini_path.map(|p| p.to_string_lossy().to_string()),
+            });
+        } else if lower.ends_with(".asi") {
+            let base_name = file_name[..file_name.len() - ".asi".len()].to_string();
+            let ini_path = find_asi_ini(&bin64, &base_name);
+            plugins.push(AsiPlugin {
+                name: base_name,
+                file_name: file_name.clone(),
+                enabled: true,
+                has_ini: ini_path.is_some(),
+                ini_path: ini_path.map(|p| p.to_string_lossy().to_string()),
+            });
+        }
+    }
+
+    plugins.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+    Ok(AsiStatus {
+        has_loader,
+        loader_name,
+        plugins,
+    })
+}
+
+fn find_asi_ini(bin64: &Path, base_name: &str) -> Option<std::path::PathBuf> {
+    // Try exact match first
+    let exact = bin64.join(format!("{}.ini", base_name));
+    if exact.exists() {
+        return Some(exact);
+    }
+    // Try any INI whose stem starts with the base name
+    let lower_base = base_name.to_lowercase();
+    if let Ok(entries) = fs::read_dir(bin64) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let name_lower = name.to_lowercase();
+            if name_lower.ends_with(".ini") {
+                let stem = &name_lower[..name_lower.len() - 4];
+                if stem.starts_with(&lower_base) {
+                    return Some(entry.path());
+                }
+            }
+        }
+    }
+    None
+}
+
+#[tauri::command]
+pub fn enable_asi_mod(game_path: String, plugin_name: String) -> Result<(), String> {
+    let bin64 = Path::new(&game_path).join("bin64");
+    let disabled = bin64.join(format!("{}.asi.disabled", plugin_name));
+    let enabled = bin64.join(format!("{}.asi", plugin_name));
+
+    if !disabled.exists() {
+        return Err(format!("Disabled ASI not found: {}", disabled.display()));
+    }
+
+    fs::rename(&disabled, &enabled)
+        .map_err(|e| format!("Failed to enable ASI mod: {}", e))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn disable_asi_mod(game_path: String, plugin_name: String) -> Result<(), String> {
+    let bin64 = Path::new(&game_path).join("bin64");
+    let enabled = bin64.join(format!("{}.asi", plugin_name));
+    let disabled = bin64.join(format!("{}.asi.disabled", plugin_name));
+
+    if !enabled.exists() {
+        return Err(format!("ASI file not found: {}", enabled.display()));
+    }
+
+    fs::rename(&enabled, &disabled)
+        .map_err(|e| format!("Failed to disable ASI mod: {}", e))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn install_asi_mod(source_path: String, game_path: String) -> Result<Vec<String>, String> {
+    let bin64 = Path::new(&game_path).join("bin64");
+    fs::create_dir_all(&bin64).map_err(|e| format!("Failed to create bin64: {}", e))?;
+
+    let source = Path::new(&source_path);
+    let mut installed: Vec<String> = Vec::new();
+
+    if source.is_file() && source.extension().map_or(false, |ext| ext.eq_ignore_ascii_case("asi")) {
+        // Single .asi file: copy it + companion files from same directory
+        let dest = bin64.join(source.file_name().unwrap());
+        fs::copy(source, &dest).map_err(|e| format!("Failed to copy ASI: {}", e))?;
+        installed.push(source.file_name().unwrap().to_string_lossy().to_string());
+
+        if let Some(parent) = source.parent() {
+            if let Ok(entries) = fs::read_dir(parent) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path == *source || !path.is_file() {
+                        continue;
+                    }
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let lower = name.to_lowercase();
+
+                    if lower.ends_with(".ini") {
+                        let dest = bin64.join(&name);
+                        fs::copy(&path, &dest).map_err(|e| format!("Failed to copy INI: {}", e))?;
+                        installed.push(name);
+                    } else if ASI_LOADER_NAMES.contains(&lower.as_str()) && !bin64.join(&name).exists() {
+                        fs::copy(&path, bin64.join(&name)).map_err(|e| format!("Failed to copy loader DLL: {}", e))?;
+                        installed.push(name);
+                    }
+                }
+            }
+        }
+    } else if source.is_dir() {
+        // Directory: copy all .asi, .ini, and loader DLLs
+        fn walk_dir(dir: &Path, bin64: &Path, installed: &mut Vec<String>) -> Result<(), String> {
+            let entries = fs::read_dir(dir).map_err(|e| format!("Failed to read dir: {}", e))?;
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk_dir(&path, bin64, installed)?;
+                    continue;
+                }
+                let name = entry.file_name().to_string_lossy().to_string();
+                let lower = name.to_lowercase();
+
+                if lower.ends_with(".asi") || lower.ends_with(".ini") {
+                    let dest = bin64.join(&name);
+                    fs::copy(&path, &dest).map_err(|e| format!("Failed to copy {}: {}", name, e))?;
+                    installed.push(name);
+                } else if ASI_LOADER_NAMES.contains(&lower.as_str()) && !bin64.join(&name).exists() {
+                    fs::copy(&path, bin64.join(&name)).map_err(|e| format!("Failed to copy loader: {}", e))?;
+                    installed.push(name);
+                }
+            }
+            Ok(())
+        }
+        walk_dir(source, &bin64, &mut installed)?;
+    } else {
+        return Err("Source must be an .asi file or a directory".to_string());
+    }
+
+    Ok(installed)
+}
+
+#[tauri::command]
+pub fn uninstall_asi_mod(game_path: String, plugin_name: String) -> Result<Vec<String>, String> {
+    let bin64 = Path::new(&game_path).join("bin64");
+    let mut deleted: Vec<String> = Vec::new();
+
+    // Delete the .asi or .asi.disabled file
+    let asi_path = bin64.join(format!("{}.asi", plugin_name));
+    let disabled_path = bin64.join(format!("{}.asi.disabled", plugin_name));
+
+    if asi_path.exists() {
+        fs::remove_file(&asi_path).map_err(|e| format!("Failed to delete ASI: {}", e))?;
+        deleted.push(format!("{}.asi", plugin_name));
+    } else if disabled_path.exists() {
+        fs::remove_file(&disabled_path).map_err(|e| format!("Failed to delete disabled ASI: {}", e))?;
+        deleted.push(format!("{}.asi.disabled", plugin_name));
+    } else {
+        return Err(format!("ASI plugin not found: {}", plugin_name));
+    }
+
+    // Delete companion INI files
+    let lower_name = plugin_name.to_lowercase();
+    if let Ok(entries) = fs::read_dir(&bin64) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let name_lower = name.to_lowercase();
+            if name_lower.ends_with(".ini") {
+                let stem = &name_lower[..name_lower.len() - 4];
+                if stem.starts_with(&lower_name) {
+                    fs::remove_file(entry.path())
+                        .map_err(|e| format!("Failed to delete INI {}: {}", name, e))?;
+                    deleted.push(name);
+                }
+            }
+        }
+    }
+
+    Ok(deleted)
+}
+
+#[tauri::command]
+pub fn open_asi_config(game_path: String, plugin_name: String) -> Result<(), String> {
+    let bin64 = Path::new(&game_path).join("bin64");
+    let ini_path = find_asi_ini(&bin64, &plugin_name)
+        .ok_or_else(|| format!("No INI config found for {}", plugin_name))?;
+
+    Command::new("cmd")
+        .args(["/c", "start", "", &ini_path.to_string_lossy()])
+        .spawn()
+        .map_err(|e| format!("Failed to open config: {}", e))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn install_asi_loader(game_path: String) -> Result<String, String> {
+    Err("ASI Loader download disabled in this build".to_string())
+}

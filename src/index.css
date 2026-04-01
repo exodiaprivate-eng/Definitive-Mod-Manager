@@ -1,0 +1,95 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-background: #08080d;
+  --color-surface: #101018;
+  --color-surface-hover: #181824;
+  --color-surface-active: #20202e;
+  --color-border: #252538;
+  --color-border-hover: #35354e;
+  --color-text-primary: #eeeef4;
+  --color-text-secondary: #9090aa;
+  --color-text-muted: #555570;
+  --color-accent: #6366f1;
+  --color-accent-hover: #818cf8;
+  --color-accent-muted: rgba(99, 102, 241, 0.15);
+  --color-success: #10b981;
+  --color-success-muted: rgba(16, 185, 129, 0.15);
+  --color-warning: #f59e0b;
+  --color-warning-muted: rgba(245, 158, 11, 0.15);
+  --color-danger: #ef4444;
+  --color-danger-muted: rgba(239, 68, 68, 0.15);
+  --color-glow: rgba(99, 102, 241, 0.08);
+  --radius-sm: 2px;
+  --radius-md: 2px;
+  --radius-lg: 3px;
+  --radius-xl: 3px;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+  font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  background: var(--color-background);
+  color: var(--color-text-primary);
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(99, 102, 241, 0.2);
+  border-radius: 1px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(99, 102, 241, 0.35);
+}
+
+[data-tauri-drag-region] {
+  -webkit-app-region: drag;
+}
+
+button, a, input, select {
+  -webkit-app-region: no-drag;
+}
+
+/* Accent glow line */
+.accent-line {
+  height: 2px;
+  background: linear-gradient(90deg, transparent, #6366f1, #a78bfa, #6366f1, transparent);
+  opacity: 0.7;
+}
+
+/* Animated pulse for Start Game */
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 15px rgba(16, 185, 129, 0.3); }
+  50% { box-shadow: 0 0 25px rgba(16, 185, 129, 0.5), 0 0 40px rgba(16, 185, 129, 0.15); }
+}
+.pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+/* Card hover lift */
+.card-lift {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.card-lift:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3), 0 0 30px rgba(99, 102, 241, 0.06);
+}
+
+/* Sidebar gradient bg */
+.sidebar-bg {
+  background: linear-gradient(180deg, #0d0d16 0%, #101018 100%);
+}
