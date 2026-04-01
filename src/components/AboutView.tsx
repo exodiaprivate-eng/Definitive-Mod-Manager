@@ -56,6 +56,25 @@ const features = [
 
 const changelog = [
   {
+    version: "1.0.2",
+    date: "April 2026",
+    title: "Feature Expansion Update",
+    changes: [
+      "Mod Packs — bundle multiple mods into shareable packs with embedded mod data",
+      "Backup Snapshots — save and restore named snapshots of your entire mod state",
+      "Compatibility Matrix — view pairwise compatibility between all installed mods",
+      "Mod Creator — build new JSON byte-patch mods from scratch within the app",
+      "Community Profiles — export and import full mod configurations for sharing",
+      "Nexus Browse — search and discover mods on Nexus Mods directly from the manager",
+      "Manual Backup button — create backups on demand from the Backups tab",
+      "Mod deletion — remove mod files directly from the mod list",
+      "Nexus API key loaded from file — no hardcoded credentials",
+      "Fixed profile save/load crash caused by serialization mismatch",
+      "Fixed drag-and-drop overlay getting stuck on cancel",
+      "ASI Loader download URL updated to latest release",
+    ],
+  },
+  {
     version: "1.0.0",
     date: "March 2026",
     title: "Initial Release",

@@ -3023,7 +3023,7 @@ pub fn check_mod_updates(
     mods_path: String,
 ) -> Result<Vec<ModUpdateStatus>, String> {
     let client = reqwest::blocking::Client::builder()
-        .user_agent("DefinitiveModManager/1.0.0")
+        .user_agent("DefinitiveModManager/1.0.2")
         .build()
         .map_err(|e| format!("HTTP client error: {}", e))?;
 
@@ -3105,7 +3105,7 @@ pub fn search_nexus_by_name(
     );
 
     let client = reqwest::blocking::Client::builder()
-        .user_agent("DefinitiveModManager/1.0.0")
+        .user_agent("DefinitiveModManager/1.0.2")
         .build()
         .map_err(|e| format!("HTTP client error: {}", e))?;
 
@@ -3745,7 +3745,7 @@ pub fn install_asi_loader(game_path: String) -> Result<String, String> {
     let url = "https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/download/v9.7.0/Ultimate-ASI-Loader_x64.zip";
     let response = reqwest::blocking::Client::new()
         .get(url)
-        .header("User-Agent", "DefinitiveModManager/1.0.0")
+        .header("User-Agent", "DefinitiveModManager/1.0.2")
         .send()
         .map_err(|e| format!("Download failed: {}", e))?;
 
@@ -4328,7 +4328,7 @@ pub fn fetch_mod_thumbnail(nexus_mod_id: u64, api_key: String, cache_dir: String
 
     // Query Nexus API for mod info
     let client = reqwest::blocking::Client::builder()
-        .user_agent("DefinitiveModManager/1.0.0")
+        .user_agent("DefinitiveModManager/1.0.2")
         .build()
         .map_err(|e| format!("HTTP client error: {}", e))?;
 
@@ -4398,7 +4398,7 @@ pub fn search_nexus_mods(query: String, api_key: String) -> Result<Vec<NexusSear
     );
 
     let client = reqwest::blocking::Client::builder()
-        .user_agent("DefinitiveModManager/1.0.0")
+        .user_agent("DefinitiveModManager/1.0.2")
         .build()
         .map_err(|e| format!("HTTP client error: {}", e))?;
 
@@ -4452,7 +4452,7 @@ pub fn get_nexus_mod_details(mod_id: u64, api_key: String) -> Result<serde_json:
     );
 
     let client = reqwest::blocking::Client::builder()
-        .user_agent("DefinitiveModManager/1.0.0")
+        .user_agent("DefinitiveModManager/1.0.2")
         .build()
         .map_err(|e| format!("HTTP client error: {}", e))?;
 
