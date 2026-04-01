@@ -275,6 +275,33 @@ export interface NewChange {
 }
 
 
+// Texture Mods
+export interface TextureModEntry {
+  folder_name: string;
+  name: string;
+  dds_count: number;
+}
+
+export interface TextureApplyResult {
+  success: boolean;
+  textures_applied: number;
+  errors: string[];
+}
+
+// Font Replacement
+export interface GameFontEntry {
+  filename: string;
+  path: string;
+  group: string;
+  language: string;
+  orig_size: number;
+}
+
+export interface FontReplaceResult {
+  success: boolean;
+  message: string;
+}
+
 // Community Profiles
 export interface CommunityProfileMod {
   title: string;

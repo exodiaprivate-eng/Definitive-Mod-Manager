@@ -100,6 +100,13 @@ pub fn run() {
             // Nexus Thumbnails
             commands::fetch_mod_thumbnail,
 
+            // Texture Mods
+            commands::scan_texture_mods,
+            commands::apply_texture_mods,
+            commands::revert_texture_mods,
+            // Font Replacement
+            commands::scan_game_fonts,
+            commands::replace_game_font,
             // Community Profiles
             commands::export_community_profile,
             commands::import_community_profile,

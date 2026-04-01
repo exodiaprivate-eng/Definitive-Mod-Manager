@@ -4373,6 +4373,674 @@ pub fn fetch_mod_thumbnail(nexus_mod_id: u64, api_key: String, cache_dir: String
 
 
 // =============================================================================
+// Texture Mods (PATHC / DDS Support)
+// =============================================================================
+
+#[derive(Debug, Clone)]
+struct PathcHeader {
+    unknown0: u32,
+    unknown1: u32,
+    dds_record_size: u32,
+    dds_record_count: u32,
+    hash_count: u32,
+    collision_path_count: u32,
+    collision_blob_size: u32,
+}
+
+#[derive(Debug, Clone)]
+struct PathcMapEntry {
+    selector: u32,
+    m1: u32,
+    m2: u32,
+    m3: u32,
+    m4: u32,
+}
+
+#[derive(Debug, Clone)]
+struct PathcCollisionEntry {
+    path_offset: u32,
+    dds_index: u32,
+    m1: u32,
+    m2: u32,
+    m3: u32,
+    m4: u32,
+    path: String,
+}
+
+#[derive(Debug, Clone)]
+struct PathcFile {
+    header: PathcHeader,
+    dds_records: Vec<Vec<u8>>,
+    key_hashes: Vec<u32>,
+    map_entries: Vec<PathcMapEntry>,
+    collision_entries: Vec<PathcCollisionEntry>,
+}
+
+fn read_pathc(path: &Path) -> Result<PathcFile, String> {
+    let raw = fs::read(path).map_err(|e| format!("Failed to read PATHC: {}", e))?;
+    if raw.len() < 0x1C {
+        return Err("File too small to be a valid .pathc".to_string());
+    }
+
+    let r = |off: usize| u32::from_le_bytes(raw[off..off + 4].try_into().unwrap());
+    let header = PathcHeader {
+        unknown0: r(0), unknown1: r(4), dds_record_size: r(8),
+        dds_record_count: r(12), hash_count: r(16),
+        collision_path_count: r(20), collision_blob_size: r(24),
+    };
+
+    let rs = header.dds_record_size as usize;
+    let dds_off = 0x1C;
+    let hash_off = dds_off + rs * header.dds_record_count as usize;
+    let map_off = hash_off + header.hash_count as usize * 4;
+    let coll_off = map_off + header.hash_count as usize * 20;
+    let blob_off = coll_off + header.collision_path_count as usize * 24;
+
+    let mut dds_records = Vec::new();
+    for i in 0..header.dds_record_count as usize {
+        let off = dds_off + i * rs;
+        dds_records.push(raw[off..off + rs].to_vec());
+    }
+
+    let mut key_hashes = Vec::new();
+    for i in 0..header.hash_count as usize {
+        key_hashes.push(u32::from_le_bytes(raw[hash_off + i * 4..hash_off + i * 4 + 4].try_into().unwrap()));
+    }
+
+    let mut map_entries = Vec::new();
+    for i in 0..header.hash_count as usize {
+        let o = map_off + i * 20;
+        map_entries.push(PathcMapEntry {
+            selector: r(o), m1: r(o + 4), m2: r(o + 8), m3: r(o + 12), m4: r(o + 16),
+        });
+    }
+
+    let blob = if blob_off < raw.len() {
+        &raw[blob_off..std::cmp::min(blob_off + header.collision_blob_size as usize, raw.len())]
+    } else {
+        &[] as &[u8]
+    };
+
+    let mut collision_entries = Vec::new();
+    for i in 0..header.collision_path_count as usize {
+        let o = coll_off + i * 24;
+        let poff = r(o);
+        let dds_idx = r(o + 4);
+        let m1 = r(o + 8);
+        let m2 = r(o + 12);
+        let m3 = r(o + 16);
+        let m4 = r(o + 20);
+        let path_str = if (poff as usize) < blob.len() {
+            let end = blob[poff as usize..].iter().position(|&b| b == 0).unwrap_or(blob.len() - poff as usize);
+            String::from_utf8_lossy(&blob[poff as usize..poff as usize + end]).to_string()
+        } else {
+            String::new()
+        };
+        collision_entries.push(PathcCollisionEntry { path_offset: poff, dds_index: dds_idx, m1, m2, m3, m4, path: path_str });
+    }
+
+    Ok(PathcFile { header, dds_records, key_hashes, map_entries, collision_entries })
+}
+
+fn serialize_pathc(pathc: &PathcFile) -> Vec<u8> {
+    let mut collision_blob: Vec<u8> = Vec::new();
+    let mut collision_rows: Vec<[u8; 24]> = Vec::new();
+
+    for entry in &pathc.collision_entries {
+        let poff = collision_blob.len() as u32;
+        collision_blob.extend_from_slice(entry.path.as_bytes());
+        collision_blob.push(0);
+        let mut row = [0u8; 24];
+        row[0..4].copy_from_slice(&poff.to_le_bytes());
+        row[4..8].copy_from_slice(&entry.dds_index.to_le_bytes());
+        row[8..12].copy_from_slice(&entry.m1.to_le_bytes());
+        row[12..16].copy_from_slice(&entry.m2.to_le_bytes());
+        row[16..20].copy_from_slice(&entry.m3.to_le_bytes());
+        row[20..24].copy_from_slice(&entry.m4.to_le_bytes());
+        collision_rows.push(row);
+    }
+
+    let dds_count = pathc.dds_records.len() as u32;
+    let hash_count = pathc.key_hashes.len() as u32;
+    let coll_count = pathc.collision_entries.len() as u32;
+    let blob_size = collision_blob.len() as u32;
+
+    let mut out: Vec<u8> = Vec::new();
+    // Header
+    out.extend_from_slice(&pathc.header.unknown0.to_le_bytes());
+    out.extend_from_slice(&pathc.header.unknown1.to_le_bytes());
+    out.extend_from_slice(&pathc.header.dds_record_size.to_le_bytes());
+    out.extend_from_slice(&dds_count.to_le_bytes());
+    out.extend_from_slice(&hash_count.to_le_bytes());
+    out.extend_from_slice(&coll_count.to_le_bytes());
+    out.extend_from_slice(&blob_size.to_le_bytes());
+
+    for rec in &pathc.dds_records {
+        out.extend_from_slice(rec);
+    }
+
+    for h in &pathc.key_hashes {
+        out.extend_from_slice(&h.to_le_bytes());
+    }
+
+    for entry in &pathc.map_entries {
+        out.extend_from_slice(&entry.selector.to_le_bytes());
+        out.extend_from_slice(&entry.m1.to_le_bytes());
+        out.extend_from_slice(&entry.m2.to_le_bytes());
+        out.extend_from_slice(&entry.m3.to_le_bytes());
+        out.extend_from_slice(&entry.m4.to_le_bytes());
+    }
+
+    for row in &collision_rows {
+        out.extend_from_slice(row);
+    }
+    out.extend_from_slice(&collision_blob);
+    out
+}
+
+fn normalize_pathc_path(p: &str) -> String {
+    let s = p.replace('\\', "/");
+    let trimmed = s.trim().trim_matches('/');
+    format!("/{}", trimmed)
+}
+
+fn get_pathc_hash(virtual_path: &str) -> u32 {
+    let norm = normalize_pathc_path(virtual_path).to_lowercase();
+    hashlittle(norm.as_bytes(), INTEGRITY_SEED)
+}
+
+/// Block-compression bytes per block by DDS FourCC
+fn bc_block_bytes_by_fourcc(fourcc: &[u8; 4]) -> Option<usize> {
+    match fourcc {
+        b"DXT1" | b"ATI1" | b"BC4U" | b"BC4S" => Some(8),
+        b"DXT3" | b"DXT5" | b"ATI2" | b"BC5U" | b"BC5S" => Some(16),
+        _ => None,
+    }
+}
+
+fn bc_block_bytes_by_dxgi(dxgi: u32) -> Option<usize> {
+    match dxgi {
+        70 | 71 | 72 | 79 | 80 | 81 => Some(8),
+        73 | 74 | 75 | 76 | 77 | 78 | 82 | 83 | 84 | 94 | 95 | 96 | 97 | 98 | 99 => Some(16),
+        _ => None,
+    }
+}
+
+fn dxgi_bits_per_pixel(dxgi: u32) -> u32 {
+    match dxgi {
+        10 => 64, 24 | 28 => 32, 61 => 8, _ => 0,
+    }
+}
+
+fn get_dds_metadata(data: &[u8]) -> (u32, u32, u32, u32) {
+    if data.len() < 128 || &data[0..4] != b"DDS " {
+        return (0, 0, 0, 0);
+    }
+    let r = |off: usize| u32::from_le_bytes(data[off..off + 4].try_into().unwrap());
+    let height = r(12);
+    let width = r(16);
+    let pitch = r(20);
+    let mips = std::cmp::max(1, r(28));
+
+    let pf_flags = r(80);
+    let pf_fourcc_raw = r(84);
+    let pf_rgb_bits = r(88);
+    let fourcc: [u8; 4] = pf_fourcc_raw.to_le_bytes();
+
+    let dxgi = if &fourcc == b"DX10" && data.len() >= 148 {
+        Some(r(128))
+    } else {
+        None
+    };
+
+    let block_bytes = bc_block_bytes_by_fourcc(&fourcc)
+        .or_else(|| dxgi.and_then(bc_block_bytes_by_dxgi));
+
+    let bpp = if block_bytes.is_none() {
+        let mut b = dxgi.map(dxgi_bits_per_pixel).unwrap_or(0);
+        if b == 0 && (pf_flags & 0x40) != 0 {
+            b = pf_rgb_bits;
+        }
+        b
+    } else {
+        0
+    };
+
+    let mut sizes = Vec::new();
+    let mut cw = std::cmp::max(1, width);
+    let mut ch = std::cmp::max(1, height);
+
+    for i in 0..std::cmp::min(4, mips) {
+        let size = if let Some(bb) = block_bytes {
+            (std::cmp::max(1, (cw + 3) / 4) * std::cmp::max(1, (ch + 3) / 4)) as usize * bb
+        } else if bpp > 0 {
+            (((cw * bpp + 7) / 8) * ch) as usize
+        } else if i == 0 && pitch > 0 {
+            pitch as usize
+        } else {
+            0
+        };
+        sizes.push((size as u32) & 0xFFFFFFFF);
+        cw = std::cmp::max(1, cw / 2);
+        ch = std::cmp::max(1, ch / 2);
+    }
+
+    while sizes.len() < 4 {
+        sizes.push(0);
+    }
+    (sizes[0], sizes[1], sizes[2], sizes[3])
+}
+
+fn create_dds_record(dds_path: &Path, record_size: usize) -> Result<Vec<u8>, String> {
+    let data = fs::read(dds_path).map_err(|e| format!("Failed to read DDS: {}", e))?;
+    if !data.starts_with(b"DDS ") {
+        return Err(format!("Not a valid DDS file: {}", dds_path.display()));
+    }
+    let mut record = vec![0u8; record_size];
+    let to_copy = std::cmp::min(data.len(), record_size);
+    record[..to_copy].copy_from_slice(&data[..to_copy]);
+    Ok(record)
+}
+
+fn update_pathc_entry(pathc: &mut PathcFile, virtual_path: &str, dds_index: u32, m: (u32, u32, u32, u32)) {
+    let target_hash = get_pathc_hash(virtual_path);
+    let idx = pathc.key_hashes.partition_point(|&h| h < target_hash);
+    let selector = 0xFFFF0000 | (dds_index & 0xFFFF);
+
+    if idx < pathc.key_hashes.len() && pathc.key_hashes[idx] == target_hash {
+        pathc.map_entries[idx].selector = selector;
+        pathc.map_entries[idx].m1 = m.0;
+        pathc.map_entries[idx].m2 = m.1;
+        pathc.map_entries[idx].m3 = m.2;
+        pathc.map_entries[idx].m4 = m.3;
+    } else {
+        pathc.key_hashes.insert(idx, target_hash);
+        pathc.map_entries.insert(idx, PathcMapEntry { selector, m1: m.0, m2: m.1, m3: m.2, m4: m.3 });
+    }
+}
+
+fn add_dds_to_pathc(pathc: &mut PathcFile, dds_path: &Path, virtual_path: &str) -> Result<u32, String> {
+    let record_size = pathc.header.dds_record_size as usize;
+    let dds_rec = create_dds_record(dds_path, record_size)?;
+    let dds_data = fs::read(dds_path).map_err(|e| format!("Failed to read DDS: {}", e))?;
+    let m = get_dds_metadata(&dds_data);
+
+    // Deduplicate: reuse existing record if identical
+    let dds_idx = if let Some(pos) = pathc.dds_records.iter().position(|r| r == &dds_rec) {
+        pos as u32
+    } else {
+        pathc.dds_records.push(dds_rec);
+        (pathc.dds_records.len() - 1) as u32
+    };
+
+    update_pathc_entry(pathc, virtual_path, dds_idx, m);
+    Ok(dds_idx)
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TextureModEntry {
+    pub folder_name: String,
+    pub name: String,
+    pub dds_count: usize,
+}
+
+#[tauri::command]
+pub fn scan_texture_mods(mods_path: String) -> Result<Vec<TextureModEntry>, String> {
+    let mods_dir = Path::new(&mods_path);
+    if !mods_dir.exists() {
+        return Err("Mods directory does not exist".to_string());
+    }
+
+    let mut entries = Vec::new();
+    let read_dir = fs::read_dir(mods_dir)
+        .map_err(|e| format!("Failed to read mods directory: {}", e))?;
+
+    for entry in read_dir {
+        let entry = entry.map_err(|e| format!("Dir entry error: {}", e))?;
+        let path = entry.path();
+
+        if !path.is_dir() {
+            continue;
+        }
+
+        let folder_name = path.file_name().unwrap().to_string_lossy().to_string();
+
+        // Skip folders that look like PAZ/PAMT archives
+        let has_paz = path.join("0.paz").exists() || fs::read_dir(&path)
+            .map(|rd| rd.filter_map(|e| e.ok()).any(|e| {
+                let n = e.file_name().to_string_lossy().to_lowercase();
+                n.ends_with(".paz") || n.ends_with(".pamt")
+            }))
+            .unwrap_or(false);
+        if has_paz {
+            continue;
+        }
+
+        // Count .dds files recursively
+        let mut dds_count = 0usize;
+        fn count_dds(dir: &Path, count: &mut usize) {
+            if let Ok(rd) = fs::read_dir(dir) {
+                for e in rd.filter_map(|e| e.ok()) {
+                    let p = e.path();
+                    if p.is_dir() {
+                        count_dds(&p, count);
+                    } else if p.extension().and_then(|x| x.to_str()).map(|x| x.eq_ignore_ascii_case("dds")).unwrap_or(false) {
+                        *count += 1;
+                    }
+                }
+            }
+        }
+        count_dds(&path, &mut dds_count);
+
+        if dds_count > 0 {
+            entries.push(TextureModEntry {
+                folder_name: folder_name.clone(),
+                name: folder_name,
+                dds_count,
+            });
+        }
+    }
+
+    entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(entries)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TextureApplyResult {
+    pub success: bool,
+    pub textures_applied: usize,
+    pub errors: Vec<String>,
+}
+
+#[tauri::command]
+pub fn apply_texture_mods(
+    game_path: String,
+    backup_dir: String,
+    texture_folders: Vec<String>,
+    mods_path: String,
+) -> Result<TextureApplyResult, String> {
+    let pathc_path = Path::new(&game_path).join("meta").join("0.pathc");
+    let backup_path = Path::new(&backup_dir);
+    let pathc_backup = backup_path.join("pathc_clean.bin");
+
+    if !backup_path.exists() {
+        fs::create_dir_all(backup_path)
+            .map_err(|e| format!("Failed to create backup directory: {}", e))?;
+    }
+
+    // Backup vanilla PATHC (first time only)
+    if !pathc_backup.exists() && pathc_path.exists() {
+        fs::copy(&pathc_path, &pathc_backup)
+            .map_err(|e| format!("Failed to backup PATHC: {}", e))?;
+    }
+
+    // Read from backup (clean state) or current
+    let source = if pathc_backup.exists() { &pathc_backup } else { &pathc_path };
+    if !source.exists() {
+        return Err("No PATHC file found at meta/0.pathc".to_string());
+    }
+
+    let mut pathc = read_pathc(source)?;
+    let mut total_applied = 0usize;
+    let mut errors = Vec::new();
+    let mods_dir = Path::new(&mods_path);
+
+    for folder_name in &texture_folders {
+        let folder = mods_dir.join(folder_name);
+        if !folder.exists() || !folder.is_dir() {
+            errors.push(format!("Folder not found: {}", folder_name));
+            continue;
+        }
+
+        // Find all .dds files recursively
+        fn find_dds(dir: &Path, base: &Path, results: &mut Vec<(std::path::PathBuf, String)>) {
+            if let Ok(rd) = fs::read_dir(dir) {
+                for e in rd.filter_map(|e| e.ok()) {
+                    let p = e.path();
+                    if p.is_dir() {
+                        find_dds(&p, base, results);
+                    } else if p.extension().and_then(|x| x.to_str()).map(|x| x.eq_ignore_ascii_case("dds")).unwrap_or(false) {
+                        if let Ok(rel) = p.strip_prefix(base) {
+                            let vpath = "/".to_string() + &rel.to_string_lossy().replace('\\', "/");
+                            results.push((p.clone(), vpath));
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut dds_files: Vec<(std::path::PathBuf, String)> = Vec::new();
+        find_dds(&folder, &folder, &mut dds_files);
+        dds_files.sort_by(|a, b| a.1.cmp(&b.1));
+
+        for (dds_path, vpath) in &dds_files {
+            match add_dds_to_pathc(&mut pathc, dds_path, vpath) {
+                Ok(_) => total_applied += 1,
+                Err(e) => errors.push(format!("{}: {}", vpath, e)),
+            }
+        }
+    }
+
+    // Serialize and write
+    let data = serialize_pathc(&pathc);
+    fs::write(&pathc_path, data)
+        .map_err(|e| format!("Failed to write modified PATHC: {}", e))?;
+
+    Ok(TextureApplyResult {
+        success: errors.is_empty(),
+        textures_applied: total_applied,
+        errors,
+    })
+}
+
+#[tauri::command]
+pub fn revert_texture_mods(game_path: String, backup_dir: String) -> Result<String, String> {
+    let pathc_backup = Path::new(&backup_dir).join("pathc_clean.bin");
+    let pathc_path = Path::new(&game_path).join("meta").join("0.pathc");
+
+    if !pathc_backup.exists() {
+        return Err("No clean PATHC backup found".to_string());
+    }
+
+    fs::copy(&pathc_backup, &pathc_path)
+        .map_err(|e| format!("Failed to restore PATHC: {}", e))?;
+
+    Ok("PATHC restored to clean state".to_string())
+}
+
+// =============================================================================
+// Font Replacement
+// =============================================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GameFontEntry {
+    pub filename: String,
+    pub path: String,
+    pub group: String,
+    pub language: String,
+    pub orig_size: u32,
+}
+
+#[tauri::command]
+pub fn scan_game_fonts(game_path: String) -> Result<Vec<GameFontEntry>, String> {
+    let game_dir = Path::new(&game_path);
+    if !game_dir.exists() {
+        return Err("Game directory not found".to_string());
+    }
+
+    let mut fonts = Vec::new();
+    let mut dirs: Vec<_> = fs::read_dir(game_dir)
+        .map_err(|e| format!("Cannot read game dir: {}", e))?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            e.path().is_dir() && name.chars().all(|c| c.is_ascii_digit()) && name != "0036"
+        })
+        .collect();
+    dirs.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+
+    for entry in &dirs {
+        let dir_name = entry.file_name().to_string_lossy().to_string();
+        let pamt_path = entry.path().join("0.pamt");
+        if !pamt_path.exists() { continue; }
+        let data = match fs::read(&pamt_path) { Ok(d) => d, Err(_) => continue };
+        let pamt_info = match read_pamt(&data) { Ok(p) => p, Err(_) => continue };
+        let file_idx = build_file_index(&pamt_info);
+
+        for (path, rec) in &file_idx {
+            let lower = path.to_lowercase();
+            if lower.ends_with(".ttf") || lower.ends_with(".otf") {
+                let filename = path.rsplit('/').next().unwrap_or(path).to_string();
+                // Derive language from filename (e.g. "eng.ttf" → "English")
+                let stem = filename.replace(".ttf", "").replace(".otf", "");
+                let lang = match stem.as_str() {
+                    "eng" => "English",
+                    "fre" => "French",
+                    "ger" => "German",
+                    "ita" => "Italian",
+                    "jpn" => "Japanese",
+                    "kor" => "Korean",
+                    "pol" => "Polish",
+                    "por-br" => "Portuguese (BR)",
+                    "rus" => "Russian",
+                    "spa-es" => "Spanish (ES)",
+                    "spa-mx" => "Spanish (MX)",
+                    "tur" => "Turkish",
+                    "zho-cn" => "Chinese (Simplified)",
+                    "zho-tw" => "Chinese (Traditional)",
+                    "reditfont" => "Base Font",
+                    other => other,
+                };
+                fonts.push(GameFontEntry {
+                    filename: filename.clone(),
+                    path: path.clone(),
+                    group: dir_name.clone(),
+                    language: lang.to_string(),
+                    orig_size: rec.decomp_size,
+                });
+            }
+        }
+    }
+
+    fonts.sort_by(|a, b| a.language.cmp(&b.language));
+    Ok(fonts)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FontReplaceResult {
+    pub success: bool,
+    pub message: String,
+}
+
+#[tauri::command]
+pub fn replace_game_font(
+    game_path: String,
+    backup_dir: String,
+    font_game_path: String,
+    replacement_path: String,
+) -> Result<FontReplaceResult, String> {
+    let backup_path = Path::new(&backup_dir);
+    if !backup_path.exists() {
+        fs::create_dir_all(backup_path)
+            .map_err(|e| format!("Failed to create backup dir: {}", e))?;
+    }
+
+    // Read the replacement font file
+    let new_font_data = fs::read(&replacement_path)
+        .map_err(|e| format!("Failed to read replacement font: {}", e))?;
+    let new_size = new_font_data.len();
+
+    // Find the font in the game archives
+    let (group_id, full_path, rec) = find_file_in_game(&game_path, &font_game_path)?;
+    let bare_filename = full_path.rsplit('/').next().unwrap_or(&full_path);
+
+    // Backup the original font (first time only)
+    let clean_name = format!("font_{}", bare_filename.replace('.', "_"));
+    let clean_backup = backup_path.join(&clean_name);
+    if !clean_backup.exists() {
+        // Extract original font and save as backup
+        match extract_from_paz(&game_path, &group_id, &rec, bare_filename) {
+            Ok(data) => {
+                let _ = fs::write(&clean_backup, &data);
+            }
+            Err(e) => {
+                log::warn!("Could not backup original font: {}", e);
+            }
+        }
+    }
+
+    // Build overlay with the replacement font (same pipeline as pabgb)
+    let overlay_dir = Path::new(&game_path).join("0036");
+    if !overlay_dir.exists() {
+        fs::create_dir_all(&overlay_dir)
+            .map_err(|e| format!("Failed to create overlay dir: {}", e))?;
+    }
+
+    // LZ4 compress the new font
+    let compressed = lz4::block::compress(&new_font_data, None, false)
+        .map_err(|e| format!("LZ4 compression failed: {}", e))?;
+
+    let dir_path = full_path.rsplit('/').skip(1).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("/");
+
+    // Build single-file overlay PAZ + PAMT
+    let mut paz_data: Vec<u8> = Vec::new();
+    let paz_offset = 0u32;
+    let comp_size = compressed.len() as u32;
+    let decomp_size = new_font_data.len() as u32;
+
+    paz_data.extend_from_slice(&compressed);
+    let padded_size = (paz_data.len() + 15) & !15;
+    paz_data.resize(padded_size, 0);
+
+    let overlay_file = OverlayFileInfo {
+        dir_path: dir_path.clone(),
+        filename: bare_filename.to_string(),
+        paz_offset,
+        comp_size,
+        decomp_size,
+        flags: 0x0002, // LZ4
+    };
+
+    let paz_total_len = paz_data.len() as u32;
+    let mut new_pamt = build_multi_pamt(&[overlay_file], paz_total_len);
+
+    let overlay_paz = overlay_dir.join("0.paz");
+    let overlay_pamt = overlay_dir.join("0.pamt");
+
+    fs::write(&overlay_paz, &paz_data)
+        .map_err(|e| format!("Failed to write overlay PAZ: {}", e))?;
+
+    update_pamt_paz_crc(&mut new_pamt, &paz_data);
+
+    fs::write(&overlay_pamt, &new_pamt)
+        .map_err(|e| format!("Failed to write overlay PAMT: {}", e))?;
+
+    // Update PAPGT
+    let pamt_header_crc = u32::from_le_bytes(new_pamt[0..4].try_into().unwrap());
+    let papgt_path = Path::new(&game_path).join("meta").join("0.papgt");
+    let papgt_backup = backup_path.join("papgt_clean.bin");
+
+    if !papgt_backup.exists() && papgt_path.exists() {
+        let _ = fs::copy(&papgt_path, &papgt_backup);
+    }
+
+    let clean_papgt = if papgt_backup.exists() {
+        fs::read(&papgt_backup).map_err(|e| format!("Failed to read PAPGT backup: {}", e))?
+    } else {
+        fs::read(&papgt_path).map_err(|e| format!("Failed to read PAPGT: {}", e))?
+    };
+
+    let new_papgt = build_papgt_with_overlay(&clean_papgt, pamt_header_crc)?;
+    fs::write(&papgt_path, &new_papgt)
+        .map_err(|e| format!("Failed to write PAPGT: {}", e))?;
+
+    Ok(FontReplaceResult {
+        success: true,
+        message: format!("Replaced {} ({} KB → {} KB)", bare_filename, rec.decomp_size / 1024, new_size / 1024),
+    })
+}
+
+// =============================================================================
 // Community Profiles (Feature 8)
 // =============================================================================
 

@@ -25,7 +25,7 @@ import { PreflightDialog } from "@/components/PreflightDialog";
 import { CheckResultDialog } from "@/components/CheckResultDialog";
 import { LogPanel, type LogEntry } from "@/components/LogPanel";
 import { StatusBar } from "@/components/StatusBar";
-import type { AppConfig, ModEntry, ConflictInfo, ActiveMod, ApplyResult, LangModEntry, PapgtStatus, ModProfile, BackupInfo, GameVersion, PreflightResult, RecoverResult, DetailedCheckResult, ModChange, NexusIdMapping, ModUpdateStatus, NexusCacheEntry, AsiStatus, ReshadeStatus, ModPack, Snapshot, NewModData, CommunityProfile, TextureModEntry, TextureApplyResult } from "@/types";
+import type { AppConfig, ModEntry, ConflictInfo, ActiveMod, ApplyResult, LangModEntry, PapgtStatus, ModProfile, BackupInfo, GameVersion, PreflightResult, RecoverResult, DetailedCheckResult, ModChange, NexusIdMapping, ModUpdateStatus, NexusCacheEntry, AsiStatus, ReshadeStatus, ModPack, Snapshot, NewModData, CommunityProfile, TextureModEntry, TextureApplyResult, GameFontEntry, FontReplaceResult } from "@/types";
 
 interface PatchDetail {
   game_file: string;
@@ -80,6 +80,7 @@ export default function App() {
   const [importedProfile, setImportedProfile] = useState<CommunityProfile | null>(null);
   const [textureMods, setTextureMods] = useState<TextureModEntry[]>([]);
   const [activeTextures, setActiveTextures] = useState<string[]>([]);
+  const [gameFonts, setGameFonts] = useState<GameFontEntry[]>([]);
 
   const addLog = useCallback((message: string, level: LogEntry["level"] = "info") => {
     const now = new Date();
@@ -238,6 +239,7 @@ export default function App() {
     scanMods();
     scanLangMods();
     scanTextureMods();
+    scanGameFonts();
     loadProfiles();
     loadBackups();
     loadModPacks();
@@ -423,6 +425,51 @@ export default function App() {
         ? prev.filter((f) => f !== folderName)
         : [...prev, folderName]
     );
+  }
+
+  async function scanGameFonts() {
+    if (!config.gamePath) return;
+    try {
+      const fonts = await invoke<GameFontEntry[]>("scan_game_fonts", {
+        gamePath: config.gamePath,
+      });
+      setGameFonts(fonts);
+      if (fonts.length > 0) {
+        addLog(`Found ${fonts.length} game font(s)`, "info");
+      }
+    } catch (e) {
+      setGameFonts([]);
+    }
+  }
+
+  async function replaceGameFont(fontGamePath: string) {
+    try {
+      const selected = await open({
+        title: "Select replacement font (.ttf / .otf)",
+        filters: [{ name: "Font Files", extensions: ["ttf", "otf"] }],
+      });
+      if (!selected) return;
+      const replacementPath = typeof selected === "string" ? selected : selected.path;
+
+      const backupDir = getAppBaseDir() + "\\backups";
+      const result = await invoke<FontReplaceResult>("replace_game_font", {
+        gamePath: config.gamePath,
+        backupDir,
+        fontGamePath,
+        replacementPath,
+      });
+
+      if (result.success) {
+        toast.success(result.message);
+        addLog(result.message, "success");
+      } else {
+        toast.error(result.message);
+        addLog(result.message, "error");
+      }
+    } catch (e) {
+      toast.error(`Font replacement failed: ${e}`);
+      addLog(`Font replacement failed: ${e}`, "error");
+    }
   }
 
   function getAppBaseDir(): string {
@@ -1595,6 +1642,8 @@ export default function App() {
                 selectedLanguage={config.selectedLanguage}
                 onActivate={activateLangMod}
                 onImportLang={importLangMod}
+                gameFonts={gameFonts}
+                onReplaceFont={replaceGameFont}
               />
             )}
             {view === "asi" && (
