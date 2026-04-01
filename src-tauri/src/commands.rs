@@ -233,50 +233,136 @@ pub fn check_conflicts(mods_path: String, active_mods: Vec<String>, browser_mod_
         })
         .collect();
 
-    // Browser mod conflicts (file-level — two mods replacing the same file)
+    // File replacement mod conflicts (file-level)
     if let Some(ref folders) = browser_mod_folders {
+        // file_path → list of mod titles that touch it
         let mut file_owners: HashMap<String, Vec<String>> = HashMap::new();
-        for folder_name in folders {
-            let mod_dir = mods_dir.join(folder_name);
-            let files_dir = mod_dir.join("files");
-            if !files_dir.exists() { continue; }
 
-            // Read manifest title
-            let title = {
-                let manifest_path = mod_dir.join("manifest.json");
-                if let Ok(data) = fs::read_to_string(&manifest_path) {
+        fn collect_all_paths(dir: &Path, base: &Path, results: &mut Vec<String>) {
+            if let Ok(rd) = fs::read_dir(dir) {
+                for e in rd.filter_map(|e| e.ok()) {
+                    let p = e.path();
+                    if p.is_dir() { collect_all_paths(&p, base, results); }
+                    else if let Ok(rel) = p.strip_prefix(base) {
+                        results.push(rel.to_string_lossy().replace('\\', "/"));
+                    }
+                }
+            }
+        }
+
+        fn get_mod_title(mod_dir: &Path, folder_name: &str) -> String {
+            for name in &["manifest.json", "mod.json"] {
+                let p = mod_dir.join(name);
+                if let Ok(data) = fs::read_to_string(&p) {
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
-                        v.get("title").and_then(|t| t.as_str()).unwrap_or(folder_name).to_string()
-                    } else { folder_name.clone() }
-                } else { folder_name.clone() }
-            };
-
-            fn collect_paths(dir: &Path, base: &Path, results: &mut Vec<String>) {
-                if let Ok(rd) = fs::read_dir(dir) {
-                    for e in rd.filter_map(|e| e.ok()) {
-                        let p = e.path();
-                        if p.is_dir() { collect_paths(&p, base, results); }
-                        else if let Ok(rel) = p.strip_prefix(base) {
-                            results.push(rel.to_string_lossy().replace('\\', "/"));
+                        let info = v.get("modinfo").unwrap_or(&v);
+                        if let Some(t) = info.get("title").and_then(|t| t.as_str()) {
+                            return t.to_string();
+                        }
+                        if let Some(t) = v.get("title").and_then(|t| t.as_str()) {
+                            return t.to_string();
                         }
                     }
                 }
             }
-            let mut paths = Vec::new();
-            collect_paths(&files_dir, &files_dir, &mut paths);
-            for p in paths {
-                file_owners.entry(p).or_default().push(title.clone());
+            folder_name.to_string()
+        }
+
+        for folder_name in folders {
+            let mod_dir = mods_dir.join(folder_name);
+            if !mod_dir.exists() { continue; }
+            let title = get_mod_title(&mod_dir, folder_name);
+
+            // Try manifest/mod.json files/ subdir first
+            let mut found_files = false;
+            for manifest_name in &["manifest.json", "mod.json"] {
+                let manifest_path = mod_dir.join(manifest_name);
+                if let Ok(data) = fs::read_to_string(&manifest_path) {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
+                        let files_dir_name = v.get("files_dir").and_then(|f| f.as_str()).unwrap_or("files");
+                        let files_dir = mod_dir.join(files_dir_name);
+                        if files_dir.exists() {
+                            let mut paths = Vec::new();
+                            collect_all_paths(&files_dir, &files_dir, &mut paths);
+                            for p in paths {
+                                file_owners.entry(p.to_lowercase()).or_default().push(title.clone());
+                            }
+                            found_files = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Try loose folder layout
+            if !found_files {
+                if let Ok(rd) = fs::read_dir(&mod_dir) {
+                    for sub in rd.filter_map(|e| e.ok()) {
+                        let sub_name = sub.file_name().to_string_lossy().to_string();
+                        if sub.path().is_dir() && is_paz_group_dir(&sub_name) {
+                            let mut paths = Vec::new();
+                            collect_all_paths(&sub.path(), &mod_dir, &mut paths);
+                            for p in paths {
+                                file_owners.entry(p.to_lowercase()).or_default().push(title.clone());
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        for (file_path, owners) in file_owners {
+        // Detect file-level conflicts (two mods replacing same file)
+        for (file_path, owners) in &file_owners {
             if owners.len() > 1 {
                 conflicts.push(ConflictInfo {
                     offset: 0,
-                    game_file: file_path,
+                    game_file: file_path.clone(),
                     mods: owners.clone(),
                     labels: owners.iter().map(|o| format!("{} replaces this file", o)).collect(),
                 });
+            }
+        }
+
+        // Cross-format conflicts: JSON mod patches a file that a file replacement mod also provides
+        // Collect filenames that JSON mods target
+        let mut json_targets: HashMap<String, Vec<String>> = HashMap::new();
+        for file_name in &active_mods {
+            let path = mods_dir.join(file_name);
+            if let Ok(mod_file) = parse_mod_file(&path) {
+                let (title, _, _, _) = get_mod_display_info(&mod_file);
+                for patch in &mod_file.patches {
+                    let bare = patch.game_file.rsplit('/').next().unwrap_or(&patch.game_file).to_lowercase();
+                    json_targets.entry(bare).or_default().push(title.clone());
+                }
+            }
+        }
+
+        // Check if any file replacement mod provides a file that JSON mods also patch
+        for (file_path, replacers) in &file_owners {
+            let bare = file_path.rsplit('/').next().unwrap_or(file_path).to_lowercase();
+            if let Some(json_mods) = json_targets.get(&bare) {
+                // This is a cross-format overlap — not necessarily a conflict since we merge them,
+                // but worth informing the user
+                let mut all_mods = json_mods.clone();
+                all_mods.extend(replacers.clone());
+                all_mods.sort();
+                all_mods.dedup();
+                if all_mods.len() > 1 {
+                    conflicts.push(ConflictInfo {
+                        offset: 0,
+                        game_file: bare.clone(),
+                        mods: all_mods.clone(),
+                        labels: all_mods.iter().map(|m| {
+                            if json_mods.contains(m) && replacers.contains(m) {
+                                format!("{} patches + replaces this file", m)
+                            } else if json_mods.contains(m) {
+                                format!("{} patches bytes in this file", m)
+                            } else {
+                                format!("{} replaces this file (used as base for patches)", m)
+                            }
+                        }).collect(),
+                    });
+                }
             }
         }
     }
@@ -1137,15 +1223,18 @@ pub fn apply_mods(
             let mod_dir = mods_dir.join(folder_name);
             let before = browser_overlay_files.len();
 
-            // Check for manifest.json → use files/ subdir
-            let manifest_path = mod_dir.join("manifest.json");
-            if manifest_path.exists() {
-                if let Ok(data) = fs::read_to_string(&manifest_path) {
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
-                        let files_dir_name = v.get("files_dir").and_then(|f| f.as_str()).unwrap_or("files");
-                        let files_dir = mod_dir.join(files_dir_name);
-                        if files_dir.exists() {
-                            collect_overlay_files(&files_dir, &mut browser_overlay_files);
+            // Check for manifest.json or mod.json → use files/ subdir
+            for manifest_name in &["manifest.json", "mod.json"] {
+                let manifest_path = mod_dir.join(manifest_name);
+                if manifest_path.exists() {
+                    if let Ok(data) = fs::read_to_string(&manifest_path) {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
+                            let files_dir_name = v.get("files_dir").and_then(|f| f.as_str()).unwrap_or("files");
+                            let files_dir = mod_dir.join(files_dir_name);
+                            if files_dir.exists() {
+                                collect_overlay_files(&files_dir, &mut browser_overlay_files);
+                                break;
+                            }
                         }
                     }
                 }
@@ -1224,8 +1313,17 @@ pub fn apply_mods(
             let clean_name = bare_filename.replace(".pabgb", "_clean.bin");
             let clean_backup = backup_path.join(&clean_name);
 
-            // Get clean decompressed data for this pabgb file
-            let flat_data_result: Result<Vec<u8>, String> = if clean_backup.exists() {
+            // Check if a file replacement mod provides this pabgb file
+            // If so, use that as base instead of vanilla (cross-format merge)
+            let browser_base: Option<Vec<u8>> = browser_overlay_files.iter()
+                .find(|(_, fname, _)| fname.eq_ignore_ascii_case(bare_filename))
+                .map(|(_, _, data)| data.clone());
+
+            // Get decompressed data — prefer file replacement base, then clean backup, then extract from PAZ
+            let flat_data_result: Result<Vec<u8>, String> = if let Some(base_data) = browser_base {
+                log::info!("Using file replacement base for {} ({} bytes), will apply JSON patches on top", bare_filename, base_data.len());
+                Ok(base_data)
+            } else if clean_backup.exists() {
                 // Read from existing clean backup
                 log::info!("Using cached clean {}", bare_filename);
                 fs::read(&clean_backup)
@@ -1310,10 +1408,27 @@ pub fn apply_mods(
             });
         }
 
-        // Add Crimson Browser mod files to overlay
+        // Add file replacement mod files to overlay (deduplicated — last mod wins)
+        // Also skip files that were already handled by the pabgb pipeline
+        let pabgb_filenames: std::collections::HashSet<String> = overlay_files.iter()
+            .map(|f| f.filename.to_lowercase())
+            .collect();
+
+        // Dedup: keep last occurrence of each dir_path/filename combo
+        let mut deduped_browser: std::collections::HashMap<String, (String, String, &Vec<u8>)> = std::collections::HashMap::new();
         for (dir_path, filename, raw_data) in &browser_overlay_files {
+            let key = format!("{}/{}", dir_path, filename).to_lowercase();
+            deduped_browser.insert(key, (dir_path.clone(), filename.clone(), raw_data));
+        }
+
+        for (_key, (dir_path, filename, raw_data)) in &deduped_browser {
+            // Skip if this file was already built by the pabgb byte-patch pipeline
+            if pabgb_filenames.contains(&filename.to_lowercase()) {
+                continue;
+            }
+
             let compressed = lz4::block::compress(raw_data, None, false)
-                .unwrap_or_else(|_| raw_data.clone());
+                .unwrap_or_else(|_| raw_data.to_vec());
 
             let paz_offset = paz_data.len() as u32;
             let comp_size = compressed.len() as u32;
@@ -5057,6 +5172,142 @@ pub fn revert_texture_mods(game_path: String, backup_dir: String) -> Result<Stri
 }
 
 // =============================================================================
+// PAZ Replacement Mods
+// =============================================================================
+// Mods that contain pre-built .paz/.pamt files inside numbered group
+// directories. Supports ANY paz index (0.paz, 1.paz, 32.paz, etc.).
+// Also handles standalone .paz files placed directly in the mods folder.
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PazReplaceResult {
+    pub success: bool,
+    pub groups_patched: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+/// Check if a filename is a PAZ archive (e.g. "0.paz", "32.paz")
+fn is_paz_file(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower.ends_with(".paz") && lower.trim_end_matches(".paz").parse::<u32>().is_ok()
+}
+
+/// Check if a filename is a PAMT index (e.g. "0.pamt", "32.pamt")
+fn is_pamt_file(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower.ends_with(".pamt") && lower.trim_end_matches(".pamt").parse::<u32>().is_ok()
+}
+
+#[tauri::command]
+pub fn apply_paz_replace_mods(
+    game_path: String,
+    backup_dir: String,
+    mods_path: String,
+    mod_folders: Vec<String>,
+) -> Result<PazReplaceResult, String> {
+    let backup_path = Path::new(&backup_dir);
+    let mods_dir = Path::new(&mods_path);
+    let game_dir = Path::new(&game_path);
+
+    if !backup_path.exists() {
+        fs::create_dir_all(backup_path)
+            .map_err(|e| format!("Failed to create backup dir: {}", e))?;
+    }
+
+    let mut groups_patched = Vec::new();
+    let mut errors = Vec::new();
+
+    for folder_name in &mod_folders {
+        let mod_dir = mods_dir.join(folder_name);
+
+        // Case A: mod_dir is a folder containing numbered group subdirs
+        if mod_dir.is_dir() {
+            if let Ok(rd) = fs::read_dir(&mod_dir) {
+                for entry in rd.filter_map(|e| e.ok()) {
+                    let group_name = entry.file_name().to_string_lossy().to_string();
+                    if !entry.path().is_dir() || !is_paz_group_dir(&group_name) { continue; }
+
+                    let game_group_dir = game_dir.join(&group_name);
+                    if !game_group_dir.exists() {
+                        errors.push(format!("Game group {} does not exist", group_name));
+                        continue;
+                    }
+
+                    // Find ALL .paz and .pamt files in this group dir
+                    if let Ok(group_rd) = fs::read_dir(entry.path()) {
+                        for file_entry in group_rd.filter_map(|e| e.ok()) {
+                            let fname = file_entry.file_name().to_string_lossy().to_string();
+                            if !is_paz_file(&fname) && !is_pamt_file(&fname) { continue; }
+
+                            let game_file = game_group_dir.join(&fname);
+                            let backup_name = format!("paz_replace_{}_{}", group_name, fname);
+                            let file_backup = backup_path.join(&backup_name);
+
+                            // Backup original (first time only)
+                            if !file_backup.exists() && game_file.exists() {
+                                if let Err(e) = fs::copy(&game_file, &file_backup) {
+                                    errors.push(format!("Failed to backup {}/{}: {}", group_name, fname, e));
+                                    continue;
+                                }
+                            }
+
+                            // Copy mod file into game group
+                            if let Err(e) = fs::copy(file_entry.path(), &game_file) {
+                                errors.push(format!("Failed to copy {} to {}: {}", fname, group_name, e));
+                            }
+                        }
+                    }
+
+                    groups_patched.push(group_name);
+                }
+            }
+        }
+    }
+
+    Ok(PazReplaceResult {
+        success: errors.is_empty(),
+        groups_patched,
+        errors,
+    })
+}
+
+#[tauri::command]
+pub fn revert_paz_replace_mods(game_path: String, backup_dir: String) -> Result<Vec<String>, String> {
+    let backup_path = Path::new(&backup_dir);
+    let game_dir = Path::new(&game_path);
+    let mut restored = Vec::new();
+
+    if !backup_path.exists() {
+        return Ok(restored);
+    }
+
+    if let Ok(rd) = fs::read_dir(backup_path) {
+        for entry in rd.filter_map(|e| e.ok()) {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Match paz_replace_{group}_{file} pattern
+            if !name.starts_with("paz_replace_") { continue; }
+            let rest = name.strip_prefix("paz_replace_").unwrap();
+
+            // Parse: group is first 4 digits, then underscore, then filename
+            if rest.len() < 6 { continue; } // "0009_0.paz" minimum
+            let group = &rest[..4];
+            if !is_paz_group_dir(group) { continue; }
+            let paz_filename = &rest[5..]; // skip the underscore
+
+            let game_file = game_dir.join(group).join(paz_filename);
+            if let Err(e) = fs::copy(entry.path(), &game_file) {
+                log::warn!("Failed to restore {}/{}: {}", group, paz_filename, e);
+            } else {
+                restored.push(format!("{}/{}", group, paz_filename));
+            }
+            // Clean up backup after restore
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+
+    Ok(restored)
+}
+
+// =============================================================================
 // File Replacement Mod Detection
 // =============================================================================
 //
@@ -5115,63 +5366,124 @@ pub fn scan_browser_mods(mods_path: String) -> Result<Vec<BrowserModEntry>, Stri
 
         let folder_name = path.file_name().unwrap().to_string_lossy().to_string();
 
-        // --- Case 1: Manifest-based mod (manifest.json + files/) ---
-        let manifest_path = path.join("manifest.json");
-        if manifest_path.exists() {
-            if let Ok(data) = fs::read_to_string(&manifest_path) {
-                if let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&data) {
-                    let format = manifest.get("format").and_then(|v| v.as_str()).unwrap_or("");
-                    if format == "crimson_browser_mod_v1" || manifest.get("files_dir").is_some() {
-                        let title = manifest.get("title").and_then(|v| v.as_str()).unwrap_or(&folder_name).to_string();
-                        let author = manifest.get("author").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
-                        let version = manifest.get("version").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let description = manifest.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let enabled = manifest.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+        // --- Case 1: Manifest-based mod ---
+        // Supports: manifest.json (Crimson Browser) or mod.json (modinfo format)
+        let manifest_candidates = [path.join("manifest.json"), path.join("mod.json")];
+        let mut found_manifest = false;
+        for manifest_path in &manifest_candidates {
+            if !manifest_path.exists() { continue; }
+            let data = match fs::read_to_string(manifest_path) { Ok(d) => d, Err(_) => continue };
+            let manifest: serde_json::Value = match serde_json::from_str(&data) { Ok(v) => v, Err(_) => continue };
 
-                        let files_dir = path.join(manifest.get("files_dir").and_then(|v| v.as_str()).unwrap_or("files"));
-                        let file_count = if files_dir.exists() { count_files_recursive(&files_dir) } else { 0 };
+            // Check if it's a recognized format
+            let format = manifest.get("format").and_then(|v| v.as_str()).unwrap_or("");
+            let has_files_dir = manifest.get("files_dir").is_some();
+            let has_modinfo = manifest.get("modinfo").is_some();
+            let files_subdir = path.join("files");
 
-                        if file_count > 0 {
-                            seen_folders.insert(folder_name.clone());
-                            entries.push(BrowserModEntry {
-                                folder_name,
-                                title,
-                                author,
-                                version,
-                                description,
-                                file_count,
-                                enabled,
-                                mod_type: "file replace".to_string(),
-                            });
+            if format == "crimson_browser_mod_v1" || has_files_dir || (has_modinfo && files_subdir.exists()) {
+                // Extract metadata — check both top-level and modinfo nested fields
+                let info = manifest.get("modinfo").unwrap_or(&manifest);
+                let title = info.get("title").and_then(|v| v.as_str())
+                    .or_else(|| manifest.get("title").and_then(|v| v.as_str()))
+                    .unwrap_or(&folder_name).to_string();
+                let author = info.get("author").and_then(|v| v.as_str())
+                    .or_else(|| manifest.get("author").and_then(|v| v.as_str()))
+                    .unwrap_or("Unknown").to_string();
+                let version = info.get("version").and_then(|v| v.as_str())
+                    .or_else(|| manifest.get("version").and_then(|v| v.as_str()))
+                    .unwrap_or("").to_string();
+                let description = info.get("description").and_then(|v| v.as_str())
+                    .or_else(|| manifest.get("description").and_then(|v| v.as_str()))
+                    .unwrap_or("").to_string();
+                let enabled = manifest.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+
+                let files_dir = path.join(manifest.get("files_dir").and_then(|v| v.as_str()).unwrap_or("files"));
+                let file_count = if files_dir.exists() { count_files_recursive(&files_dir) } else { 0 };
+
+                if file_count > 0 {
+                    seen_folders.insert(folder_name.clone());
+                    entries.push(BrowserModEntry {
+                        folder_name: folder_name.clone(),
+                        title,
+                        author,
+                        version,
+                        description,
+                        file_count,
+                        enabled,
+                        mod_type: "file replace".to_string(),
+                    });
+                    found_manifest = true;
+                    break;
+                }
+            }
+        }
+        if found_manifest { continue; }
+
+        // --- Case 2: Auto-detect loose folder with numbered PAZ group subdirs ---
+        if seen_folders.contains(&folder_name) { continue; }
+
+        let mut paz_file_count = 0usize;
+        let mut has_loose_files = false;
+        let mut total_files = 0usize;
+        let mut has_batch_script = false;
+
+        if let Ok(rd) = fs::read_dir(&path) {
+            for sub in rd.filter_map(|e| e.ok()) {
+                let sub_name = sub.file_name().to_string_lossy().to_string();
+                let sub_lower = sub_name.to_lowercase();
+
+                // Check for batch/script files
+                if sub_lower.ends_with(".bat") || sub_lower.ends_with(".ps1") || sub_lower.ends_with(".cmd") {
+                    has_batch_script = true;
+                }
+
+                if sub.path().is_dir() && is_paz_group_dir(&sub_name) {
+                    // Check if this group dir contains any .paz files
+                    let mut has_paz = false;
+                    if let Ok(group_rd) = fs::read_dir(sub.path()) {
+                        for f in group_rd.filter_map(|e| e.ok()) {
+                            let fname = f.file_name().to_string_lossy().to_string();
+                            if is_paz_file(&fname) {
+                                has_paz = true;
+                                paz_file_count += 1;
+                            }
                         }
-                        continue;
+                    }
+                    if !has_paz {
+                        // Loose game files inside numbered dir
+                        let count = count_files_recursive(&sub.path());
+                        if count > 0 {
+                            has_loose_files = true;
+                            total_files += count;
+                        }
                     }
                 }
             }
         }
 
-        // --- Case 2: Auto-detect loose folder with numbered PAZ group subdirs ---
-        // e.g. MyMod/0012/ui/texture/icon.dds
-        if seen_folders.contains(&folder_name) { continue; }
-
-        let mut has_group_dirs = false;
-        let mut total_files = 0usize;
-        if let Ok(rd) = fs::read_dir(&path) {
-            for sub in rd.filter_map(|e| e.ok()) {
-                let sub_name = sub.file_name().to_string_lossy().to_string();
-                if sub.path().is_dir() && is_paz_group_dir(&sub_name) {
-                    has_group_dirs = true;
-                    total_files += count_files_recursive(&sub.path());
-                }
-            }
-        }
-
-        if has_group_dirs && total_files > 0 {
-            // This is a loose file replacement mod — treat the folder itself as the files root
-            // (the numbered dirs are inside it directly, not under a "files/" subdir)
+        // Case 2a: PAZ replacement mod (e.g. MyMod/0009/0.paz or MyMod/0009/32.paz)
+        if paz_file_count > 0 {
+            let desc = if has_batch_script {
+                "Contains installer script — enable to replace PAZ archives directly".to_string()
+            } else { String::new() };
             entries.push(BrowserModEntry {
                 folder_name: folder_name.clone(),
-                title: folder_name,
+                title: folder_name.clone(),
+                author: "Unknown".to_string(),
+                version: String::new(),
+                description: desc,
+                file_count: paz_file_count,
+                enabled: true,
+                mod_type: "paz replace".to_string(),
+            });
+        }
+
+        // Case 2b: Loose file replacement mod (e.g. MyMod/0012/ui/texture/icon.dds)
+        if has_loose_files {
+            entries.push(BrowserModEntry {
+                folder_name: folder_name.clone(),
+                title: folder_name.clone(),
                 author: "Unknown".to_string(),
                 version: String::new(),
                 description: String::new(),
@@ -5179,6 +5491,42 @@ pub fn scan_browser_mods(mods_path: String) -> Result<Vec<BrowserModEntry>, Stri
                 enabled: true,
                 mod_type: "file replace".to_string(),
             });
+        }
+
+        // Case 2c: Script-only mod (has .bat but no PAZ or loose files)
+        if has_batch_script && paz_file_count == 0 && !has_loose_files {
+            entries.push(BrowserModEntry {
+                folder_name: folder_name.clone(),
+                title: folder_name.clone(),
+                author: "Unknown".to_string(),
+                version: String::new(),
+                description: "This mod uses an installer script — run it manually from the mod folder".to_string(),
+                file_count: 0,
+                enabled: false,
+                mod_type: "script".to_string(),
+            });
+        }
+    }
+
+    // --- Case 3: Standalone .paz files at the mods root ---
+    // e.g. someone drops "32.paz" directly into the mods folder
+    if let Ok(rd) = fs::read_dir(mods_dir) {
+        for entry in rd.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if !path.is_file() { continue; }
+            let fname = entry.file_name().to_string_lossy().to_string();
+            if is_paz_file(&fname) {
+                entries.push(BrowserModEntry {
+                    folder_name: fname.clone(),
+                    title: fname.clone(),
+                    author: "Unknown".to_string(),
+                    version: String::new(),
+                    description: "Standalone PAZ file — needs to be placed in a group folder (e.g. 0009/) to mount".to_string(),
+                    file_count: 1,
+                    enabled: false,
+                    mod_type: "standalone paz".to_string(),
+                });
+            }
         }
     }
 

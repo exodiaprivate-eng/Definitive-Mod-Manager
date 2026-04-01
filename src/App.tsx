@@ -25,7 +25,7 @@ import { PreflightDialog } from "@/components/PreflightDialog";
 import { CheckResultDialog } from "@/components/CheckResultDialog";
 import { LogPanel, type LogEntry } from "@/components/LogPanel";
 import { StatusBar } from "@/components/StatusBar";
-import type { AppConfig, ModEntry, ConflictInfo, ActiveMod, ApplyResult, LangModEntry, PapgtStatus, ModProfile, BackupInfo, GameVersion, PreflightResult, RecoverResult, DetailedCheckResult, ModChange, NexusIdMapping, ModUpdateStatus, NexusCacheEntry, AsiStatus, ReshadeStatus, ModPack, Snapshot, NewModData, CommunityProfile, TextureModEntry, TextureApplyResult, GameFontEntry, FontReplaceResult, BrowserModEntry } from "@/types";
+import type { AppConfig, ModEntry, ConflictInfo, ActiveMod, ApplyResult, LangModEntry, PapgtStatus, ModProfile, BackupInfo, GameVersion, PreflightResult, RecoverResult, DetailedCheckResult, ModChange, NexusIdMapping, ModUpdateStatus, NexusCacheEntry, AsiStatus, ReshadeStatus, ModPack, Snapshot, NewModData, CommunityProfile, TextureModEntry, TextureApplyResult, GameFontEntry, FontReplaceResult, BrowserModEntry, PazReplaceResult } from "@/types";
 
 interface PatchDetail {
   game_file: string;
@@ -1391,6 +1391,27 @@ export default function App() {
         }
       }
 
+      // Apply PAZ replacement mods if any are enabled
+      const pazReplaceFolders = activeBrowserMods.filter((f) =>
+        browserMods.find((m) => m.folder_name === f && m.mod_type === "paz replace")
+      );
+      if (pazReplaceFolders.length > 0) {
+        try {
+          const pazResult = await invoke<PazReplaceResult>("apply_paz_replace_mods", {
+            gamePath: config.gamePath,
+            backupDir,
+            modsPath: config.modsPath,
+            modFolders: pazReplaceFolders,
+          });
+          if (pazResult.groups_patched.length > 0) {
+            addLog(`PAZ replace: patched group(s) ${pazResult.groups_patched.join(", ")}`, "success");
+          }
+          pazResult.errors.forEach((err) => addLog(`  PAZ replace error: ${err}`, "error"));
+        } catch (e) {
+          addLog(`PAZ replace failed: ${e}`, "error");
+        }
+      }
+
       // Refresh status after mount
       loadBackups();
       scanPapgt();
@@ -1424,6 +1445,19 @@ export default function App() {
         addLog(texMsg, "success");
       } catch {
         // No PATHC backup — texture mods were never applied, skip silently
+      }
+
+      // Revert PAZ replacement mods (restore original group PAZ files)
+      try {
+        const pazRestored = await invoke<string[]>("revert_paz_replace_mods", {
+          gamePath: config.gamePath,
+          backupDir,
+        });
+        if (pazRestored.length > 0) {
+          addLog(`PAZ replace reverted: ${pazRestored.length} file(s) restored`, "success");
+        }
+      } catch {
+        // No PAZ backups — never applied, skip silently
       }
 
       scanPapgt();

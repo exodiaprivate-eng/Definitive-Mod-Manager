@@ -105,8 +105,10 @@ pub fn run() {
             commands::scan_texture_mods,
             commands::apply_texture_mods,
             commands::revert_texture_mods,
-            // Crimson Browser Mods
+            // File Replacement & PAZ Replace Mods
             commands::scan_browser_mods,
+            commands::apply_paz_replace_mods,
+            commands::revert_paz_replace_mods,
             // Font Replacement
             commands::scan_game_fonts,
             commands::replace_game_font,

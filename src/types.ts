@@ -300,6 +300,13 @@ export interface BrowserModEntry {
   mod_type: string;
 }
 
+// PAZ Replacement
+export interface PazReplaceResult {
+  success: boolean;
+  groups_patched: string[];
+  errors: string[];
+}
+
 // Font Replacement
 export interface GameFontEntry {
   filename: string;

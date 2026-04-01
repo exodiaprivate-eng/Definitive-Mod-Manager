@@ -344,7 +344,7 @@ export function ModList({
                       enabled ? "bg-accent/70" : "bg-border/30 group-hover:bg-accent/50"
                     )} />
 
-                    <div className="flex items-center gap-5 pl-6 pr-5 py-5">
+                    <div className="flex items-center gap-4 pr-5 py-5" style={{ paddingLeft: "20px" }}>
                       <div
                         className={cn(
                           "w-5 h-5 rounded-sm border flex items-center justify-center shrink-0 transition-all",
@@ -358,7 +358,7 @@ export function ModList({
                         <Image className={cn("w-4 h-4", enabled ? "text-accent" : "text-text-muted")} />
                       </div>
 
-                      <div className="flex-1 min-w-0">
+                      <div className="flex-1 min-w-0" style={{ marginLeft: "4px" }}>
                         <h3 className={cn("text-base font-semibold truncate", enabled ? "text-text-primary" : "text-text-secondary")}>
                           {mod.name}
                         </h3>
@@ -378,12 +378,12 @@ export function ModList({
           </div>
         )}
 
-        {/* File Replacement Mods */}
+        {/* Archive & File Replacement Mods */}
         {browserMods.length > 0 && (
           <div style={{ marginTop: "24px" }}>
             <p className="text-xs font-bold uppercase tracking-[0.15em] text-text-muted/60 mb-4 flex items-center gap-2">
               <Puzzle className="w-4 h-4" />
-              File Replacement Mods ({browserMods.length})
+              Archive &amp; File Mods ({browserMods.length})
             </p>
             <div className="space-y-3">
               {browserMods.map((mod) => {
@@ -404,7 +404,7 @@ export function ModList({
                       enabled ? "bg-accent/70" : "bg-border/30 group-hover:bg-accent/50"
                     )} />
 
-                    <div className="flex items-center gap-5 pl-6 pr-5 py-5">
+                    <div className="flex items-center gap-4 pr-5 py-5" style={{ paddingLeft: "20px" }}>
                       <div
                         className={cn(
                           "w-5 h-5 rounded-sm border flex items-center justify-center shrink-0 transition-all",
@@ -418,7 +418,7 @@ export function ModList({
                         <Puzzle className={cn("w-4 h-4", enabled ? "text-accent" : "text-text-muted")} />
                       </div>
 
-                      <div className="flex-1 min-w-0">
+                      <div className="flex-1 min-w-0" style={{ marginLeft: "4px" }}>
                         <h3 className={cn("text-base font-semibold truncate", enabled ? "text-text-primary" : "text-text-secondary")}>
                           {mod.title}
                         </h3>
@@ -439,7 +439,7 @@ export function ModList({
                       </div>
 
                       <span className="text-[11px] font-mono bg-white/[0.03] text-text-muted px-2.5 py-1 rounded-sm border border-border/30">
-                        file replace
+                        {mod.mod_type}
                       </span>
                     </div>
                   </div>
