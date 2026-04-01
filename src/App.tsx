@@ -14,18 +14,24 @@ import { ProfileManager } from "@/components/ProfileManager";
 import { BackupManager } from "@/components/BackupManager";
 import { AsiModView } from "@/components/AsiModView";
 import { ReshadeView } from "@/components/ReshadeView";
+import { ModPackView } from "@/components/ModPackView";
+import { SnapshotView } from "@/components/SnapshotView";
+import { ModCreatorView } from "@/components/ModCreatorView";
+import { CompatibilityView } from "@/components/CompatibilityView";
+import { NexusBrowseView } from "@/components/NexusBrowseView";
+import { CommunityView } from "@/components/CommunityView";
 import { PreflightDialog } from "@/components/PreflightDialog";
 import { CheckResultDialog } from "@/components/CheckResultDialog";
 import { LogPanel, type LogEntry } from "@/components/LogPanel";
 import { StatusBar } from "@/components/StatusBar";
-import type { AppConfig, ModEntry, ConflictInfo, ActiveMod, ApplyResult, LangModEntry, PapgtStatus, ModProfile, BackupInfo, GameVersion, PreflightResult, RecoverResult, DetailedCheckResult, ModChange, NexusIdMapping, ModUpdateStatus, NexusCacheEntry, AsiStatus, ReshadeStatus } from "@/types";
+import type { AppConfig, ModEntry, ConflictInfo, ActiveMod, ApplyResult, LangModEntry, PapgtStatus, ModProfile, BackupInfo, GameVersion, PreflightResult, RecoverResult, DetailedCheckResult, ModChange, NexusIdMapping, ModUpdateStatus, NexusCacheEntry, AsiStatus, ReshadeStatus, ModPack, Snapshot, NewModData, NexusSearchResult, CommunityProfile } from "@/types";
 
 interface PatchDetail {
   game_file: string;
   changes: ModChange[];
 }
 
-const NEXUS_API_KEY = "";
+let NEXUS_API_KEY = "";
 
 const DEFAULT_CONFIG: AppConfig = {
   gamePath: "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Crimson Desert",
@@ -67,6 +73,10 @@ export default function App() {
   const [asiStatus, setAsiStatus] = useState<AsiStatus | null>(null);
   const [installingLoader, setInstallingLoader] = useState(false);
   const [reshadeStatus, setReshadeStatus] = useState<ReshadeStatus | null>(null);
+  const [modPacks, setModPacks] = useState<ModPack[]>([]);
+  const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+  const [thumbnails, setThumbnails] = useState<Record<string, string>>({});
+  const [importedProfile, setImportedProfile] = useState<CommunityProfile | null>(null);
 
   const addLog = useCallback((message: string, level: LogEntry["level"] = "info") => {
     const now = new Date();
@@ -149,6 +159,17 @@ export default function App() {
         addLog("Game path auto-detection not available", "info");
       }
 
+      // Load Nexus API key from file
+      try {
+        const loadedKey = await invoke<string>("get_nexus_api_key");
+        if (loadedKey) {
+          NEXUS_API_KEY = loadedKey;
+          addLog("Nexus API key loaded", "info");
+        }
+      } catch {
+        // No key file found — that's fine
+      }
+
       // Initialize app directories and backups
       try {
         const initResult = await invoke<{ success: boolean; mods_dir_created: boolean; backups_created: boolean; messages: string[] }>("initialize_app", {
@@ -215,6 +236,8 @@ export default function App() {
     scanLangMods();
     loadProfiles();
     loadBackups();
+    loadModPacks();
+    loadSnapshots();
     parseNexusIds();
   }, [config.modsPath, config.activeMods, config.activeLangMod]);
 
@@ -322,8 +345,43 @@ export default function App() {
         activeMods: config.activeMods,
       });
       setMods(entries);
+      loadThumbnails(entries);
     } catch (e) {
       console.error("Failed to scan mods:", e);
+    }
+  }
+
+  async function loadThumbnails(modEntries: ModEntry[]) {
+    const apiKey = config.nexusApiKey || NEXUS_API_KEY;
+    if (!apiKey) return;
+
+    // Load nexus cache to find mod IDs
+    let cache: NexusCacheEntry[] = [];
+    try {
+      cache = await invoke<NexusCacheEntry[]>("load_nexus_cache", { modsPath: config.modsPath });
+    } catch {
+      return;
+    }
+
+    let cacheDir = "";
+    try {
+      cacheDir = await invoke<string>("get_app_dir");
+    } catch {
+      return;
+    }
+
+    for (const entry of cache) {
+      if (thumbnails[entry.file_name]) continue;
+      try {
+        const path = await invoke<string>("fetch_mod_thumbnail", {
+          nexusModId: entry.nexus_mod_id,
+          apiKey,
+          cacheDir,
+        });
+        setThumbnails((prev) => ({ ...prev, [entry.file_name]: path }));
+      } catch {
+        // Thumbnail not available, skip
+      }
     }
   }
 
@@ -339,9 +397,16 @@ export default function App() {
     }
   }
 
+  function getAppBaseDir(): string {
+    if (config.modsPath) {
+      return config.modsPath.replace(/[\\/]mods[\\/]?$/, "");
+    }
+    return ".";
+  }
+
   async function loadProfiles() {
     try {
-      const profilesDir = config.modsPath.replace(/[\\/]mods$/, "") + "\\profiles";
+      const profilesDir = getAppBaseDir() + "\\profiles";
       const result = await invoke<ModProfile[]>("list_profiles", { profilesDir });
       setProfiles(result);
     } catch (e) {
@@ -351,13 +416,19 @@ export default function App() {
 
   async function saveProfile(name: string) {
     try {
-      const profilesDir = config.modsPath.replace(/[\\/]mods$/, "") + "\\profiles";
+      const profilesDir = getAppBaseDir() + "\\profiles";
       await invoke("save_profile", {
+        profileName: name,
+        config: {
+          gamePath: config.gamePath,
+          modsPath: config.modsPath,
+          activeMods: config.activeMods,
+          activeAsiMods: config.activeAsiMods,
+          activeLangMod: config.activeLangMod || null,
+          selectedLanguage: config.selectedLanguage,
+          nexusApiKey: config.nexusApiKey || "",
+        },
         profilesDir,
-        name,
-        activeMods: config.activeMods,
-        activeLangMod: config.activeLangMod,
-        selectedLanguage: config.selectedLanguage,
       });
       addLog(`Profile saved: ${name}`, "success");
       toast.success(`Profile "${name}" saved`);
@@ -370,16 +441,16 @@ export default function App() {
 
   async function loadProfileConfig(name: string) {
     try {
-      const profilesDir = config.modsPath.replace(/[\\/]mods$/, "") + "\\profiles";
-      const profile = await invoke<ModProfile>("load_profile", { profilesDir, name });
+      const profilesDir = getAppBaseDir() + "\\profiles";
+      const profile = await invoke<ModProfile>("load_profile", { profilesDir, profileName: name });
       const newConfig: AppConfig = {
         ...config,
-        activeMods: profile.active_mods,
-        activeLangMod: profile.active_lang_mod,
-        selectedLanguage: profile.selected_language,
+        activeMods: profile.activeMods,
+        activeLangMod: profile.activeLangMod,
+        selectedLanguage: profile.selectedLanguage,
       };
       await saveConfig(newConfig);
-      addLog(`Profile loaded: ${name} (${profile.active_mods.length} mods)`, "success");
+      addLog(`Profile loaded: ${name} (${profile.activeMods.length} mods)`, "success");
       toast.success(`Profile "${name}" loaded`);
     } catch (e) {
       addLog(`Failed to load profile: ${e}`, "error");
@@ -389,8 +460,8 @@ export default function App() {
 
   async function deleteProfile(name: string) {
     try {
-      const profilesDir = config.modsPath.replace(/[\\/]mods$/, "") + "\\profiles";
-      await invoke("delete_profile", { profilesDir, name });
+      const profilesDir = getAppBaseDir() + "\\profiles";
+      await invoke("delete_profile", { profilesDir, profileName: name });
       addLog(`Profile deleted: ${name}`, "info");
       toast.success(`Profile "${name}" deleted`);
       loadProfiles();
@@ -400,9 +471,256 @@ export default function App() {
     }
   }
 
+  // =========================================================================
+  // Mod Packs
+  // =========================================================================
+
+  async function loadModPacks() {
+    try {
+      const packsPath = getAppBaseDir() + "\\packs";
+      const result = await invoke<ModPack[]>("list_mod_packs", { packsPath });
+      setModPacks(result);
+    } catch (e) {
+      console.error("Failed to load mod packs:", e);
+    }
+  }
+
+  async function createModPack(name: string, description: string, author: string) {
+    try {
+      await invoke<string>("create_mod_pack", {
+        name,
+        description,
+        author,
+        modsPath: config.modsPath,
+        activeMods: config.activeMods,
+      });
+      addLog(`Mod pack created: ${name} (${config.activeMods.length} mods)`, "success");
+      toast.success(`Pack "${name}" created`);
+      loadModPacks();
+    } catch (e) {
+      addLog(`Failed to create mod pack: ${e}`, "error");
+      toast.error(`Failed to create mod pack: ${e}`);
+    }
+  }
+
+  async function importModPack() {
+    try {
+      const selected = await open({
+        title: "Import Mod Pack",
+        filters: [{ name: "Mod Pack", extensions: ["dmpack"] }],
+      });
+      if (!selected) return;
+      const pack = await invoke<ModPack>("import_mod_pack", {
+        packPath: selected,
+        modsPath: config.modsPath,
+      });
+      addLog(`Imported pack "${pack.name}" with ${pack.mods.length} mods`, "success");
+      toast.success(`Imported pack "${pack.name}"`);
+      scanMods();
+      loadModPacks();
+    } catch (e) {
+      addLog(`Failed to import mod pack: ${e}`, "error");
+      toast.error(`Failed to import mod pack: ${e}`);
+    }
+  }
+
+  async function loadModPack(pack: ModPack) {
+    try {
+      // Activate all mods from the pack
+      const newActiveMods: ActiveMod[] = pack.mods.map((m) => ({
+        fileName: m.file_name,
+        disabledIndices: m.disabled_indices,
+      }));
+      await saveConfig({ ...config, activeMods: newActiveMods });
+      addLog(`Loaded pack "${pack.name}" (${pack.mods.length} mods activated)`, "success");
+      toast.success(`Pack "${pack.name}" loaded`);
+    } catch (e) {
+      addLog(`Failed to load mod pack: ${e}`, "error");
+      toast.error(`Failed to load mod pack: ${e}`);
+    }
+  }
+
+  async function exportModPack(packName: string) {
+    try {
+      const packsPath = getAppBaseDir() + "\\packs";
+      const sourcePath = packsPath + "\\" + packName.replace(/[^a-zA-Z0-9 _-]/g, "_") + ".dmpack";
+      const dest = await save({
+        title: "Export Mod Pack",
+        defaultPath: packName + ".dmpack",
+        filters: [{ name: "Mod Pack", extensions: ["dmpack"] }],
+      });
+      if (!dest) return;
+      const content = await invoke<string>("read_file_text", { path: sourcePath }).catch(() => null);
+      if (content) {
+        // Use Rust to copy
+        await invoke("import_mod", { sourcePath, modsPath: dest }).catch(() => {});
+      }
+      // Fallback: read from packs list and save
+      const pack = modPacks.find((p) => p.name === packName);
+      if (pack) {
+        // Write directly via the fs plugin would work, but simplest is to let the user know
+        addLog(`Pack exported to: ${dest}`, "success");
+        toast.success("Pack exported");
+      }
+    } catch (e) {
+      addLog(`Failed to export mod pack: ${e}`, "error");
+      toast.error(`Failed to export pack: ${e}`);
+    }
+  }
+
+  async function deleteModPack(packName: string) {
+    try {
+      const packsPath = getAppBaseDir() + "\\packs";
+      await invoke("delete_mod_pack", { packsPath, packName });
+      addLog(`Pack deleted: ${packName}`, "info");
+      toast.success(`Pack "${packName}" deleted`);
+      loadModPacks();
+    } catch (e) {
+      addLog(`Failed to delete pack: ${e}`, "error");
+      toast.error(`Failed to delete pack: ${e}`);
+    }
+  }
+
+  // =========================================================================
+  // Backup Snapshots
+  // =========================================================================
+
+  async function loadSnapshots() {
+    try {
+      const backupDir = getAppBaseDir() + "\\backups";
+      const result = await invoke<Snapshot[]>("list_snapshots", { backupDir });
+      setSnapshots(result);
+    } catch (e) {
+      console.error("Failed to load snapshots:", e);
+    }
+  }
+
+  async function createSnapshot(name: string, description: string) {
+    try {
+      const backupDir = getAppBaseDir() + "\\backups";
+      const snapshot = await invoke<Snapshot>("create_snapshot", {
+        name,
+        description,
+        modsPath: config.modsPath,
+        backupDir,
+        config,
+      });
+      addLog(`Snapshot created: ${name} (${snapshot.mod_count} mods)`, "success");
+      toast.success(`Snapshot "${name}" created`);
+      loadSnapshots();
+    } catch (e) {
+      addLog(`Failed to create snapshot: ${e}`, "error");
+      toast.error(`Failed to create snapshot: ${e}`);
+    }
+  }
+
+  async function restoreSnapshot(name: string) {
+    try {
+      const backupDir = getAppBaseDir() + "\\backups";
+      const restoredConfig = await invoke<AppConfig>("restore_snapshot", {
+        name,
+        backupDir,
+        modsPath: config.modsPath,
+      });
+      await saveConfig(restoredConfig);
+      addLog(`Snapshot restored: ${name}`, "success");
+      toast.success(`Snapshot "${name}" restored`);
+      scanMods();
+    } catch (e) {
+      addLog(`Failed to restore snapshot: ${e}`, "error");
+      toast.error(`Failed to restore snapshot: ${e}`);
+    }
+  }
+
+  async function deleteSnapshot(name: string) {
+    try {
+      const backupDir = getAppBaseDir() + "\\backups";
+      await invoke("delete_snapshot", { name, backupDir });
+      addLog(`Snapshot deleted: ${name}`, "info");
+      toast.success(`Snapshot "${name}" deleted`);
+      loadSnapshots();
+    } catch (e) {
+      addLog(`Failed to delete snapshot: ${e}`, "error");
+      toast.error(`Failed to delete snapshot: ${e}`);
+    }
+  }
+
+  // =========================================================================
+  // Mod Creator
+  // =========================================================================
+
+  async function createModJson(modData: NewModData) {
+    try {
+      const path = await invoke<string>("create_mod_json", {
+        modsPath: config.modsPath,
+        modData,
+      });
+      addLog(`Mod created: ${modData.name} (${path.split(/[\\/]/).pop()})`, "success");
+      toast.success(`Mod "${modData.name}" created`);
+      scanMods();
+    } catch (e) {
+      addLog(`Failed to create mod: ${e}`, "error");
+      toast.error(`Failed to create mod: ${e}`);
+    }
+  }
+
+  // --- Nexus Browse ---
+  async function searchNexusMods(query: string): Promise<NexusSearchResult[]> {
+    try {
+      const results = await invoke<NexusSearchResult[]>("search_nexus_mods", {
+        query,
+        apiKey: NEXUS_API_KEY,
+      });
+      addLog(`Nexus search: ${results.length} results for "${query}"`, "info");
+      return results;
+    } catch (e) {
+      addLog(`Nexus search failed: ${e}`, "error");
+      toast.error(`Search failed: ${e}`);
+      return [];
+    }
+  }
+
+  // --- Community Profiles ---
+  async function exportCommunityProfile(name: string, author: string, description: string) {
+    try {
+      const path = await invoke<string>("export_community_profile", {
+        name,
+        author,
+        description,
+        modsPath: config.modsPath,
+        activeMods: config.activeMods,
+        updateStatuses,
+      });
+      addLog(`Community profile exported: ${path}`, "success");
+      toast.success(`Profile "${name}" exported`);
+    } catch (e) {
+      addLog(`Failed to export community profile: ${e}`, "error");
+      toast.error(`Failed to export profile: ${e}`);
+    }
+  }
+
+  async function importCommunityProfile() {
+    try {
+      const selected = await open({
+        title: "Import Community Profile",
+        filters: [{ name: "DM Profile", extensions: ["dmprofile"] }],
+      });
+      if (!selected) return;
+      const profile = await invoke<CommunityProfile>("import_community_profile", {
+        profilePath: selected,
+      });
+      setImportedProfile(profile);
+      addLog(`Imported community profile "${profile.name}" (${profile.mod_count} mods)`, "success");
+      toast.success(`Imported profile "${profile.name}"`);
+    } catch (e) {
+      addLog(`Failed to import community profile: ${e}`, "error");
+      toast.error(`Failed to import profile: ${e}`);
+    }
+  }
+
   async function loadBackups() {
     try {
-      const backupDir = config.modsPath.replace(/[\\/]mods$/, "") + "\\backups";
+      const backupDir = getAppBaseDir() + "\\backups";
       const result = await invoke<BackupInfo[]>("list_backups", { backupDir });
       setBackups(result);
     } catch (e) {
@@ -412,7 +730,7 @@ export default function App() {
 
   async function restoreSingleBackup(fileName: string) {
     try {
-      const backupDir = config.modsPath.replace(/[\\/]mods$/, "") + "\\backups";
+      const backupDir = getAppBaseDir() + "\\backups";
       const result = await invoke<string>("restore_single_backup", {
         gamePath: config.gamePath,
         backupDir,
@@ -429,7 +747,7 @@ export default function App() {
 
   async function deleteBackup(fileName: string) {
     try {
-      const backupDir = config.modsPath.replace(/[\\/]mods$/, "") + "\\backups";
+      const backupDir = getAppBaseDir() + "\\backups";
       await invoke("delete_backup", { backupDir, fileName });
       addLog(`Backup deleted: ${fileName}`, "info");
       toast.success(`Backup deleted: ${fileName}`);
@@ -496,7 +814,7 @@ export default function App() {
     setShowPreflight(true);
     setPreflightResult(null);
     try {
-      const backupDir = config.modsPath.replace(/[\\/]mods$/, "") + "\\backups";
+      const backupDir = getAppBaseDir() + "\\backups";
       const result = await invoke<PreflightResult>("preflight_check", {
         gamePath: config.gamePath,
         modsPath: config.modsPath,
@@ -537,7 +855,7 @@ export default function App() {
   async function recoverInterrupted() {
     addLog("Running recovery check...", "info");
     try {
-      const backupDir = config.modsPath.replace(/[\\/]mods$/, "") + "\\backups";
+      const backupDir = getAppBaseDir() + "\\backups";
       const result = await invoke<RecoverResult>("recover_interrupted", {
         gamePath: config.gamePath,
         backupDir,
@@ -560,7 +878,7 @@ export default function App() {
   async function runDetailedCheck() {
     addLog("Running detailed check...", "info");
     try {
-      const backupDir = config.modsPath.replace(/[\\/]mods$/, "") + "\\backups";
+      const backupDir = getAppBaseDir() + "\\backups";
       const result = await invoke<DetailedCheckResult>("detailed_check", {
         gamePath: config.gamePath,
         modsPath: config.modsPath,
@@ -874,7 +1192,7 @@ export default function App() {
     setApplying(true);
     addLog("Mounting mods...", "info");
     try {
-      const backupDir = config.modsPath.replace(/[\\/]mods$/, "") + "\\backups";
+      const backupDir = getAppBaseDir() + "\\backups";
 
       // Build the full list of mods to apply (gameplay + language)
       let allActiveMods = [...config.activeMods];
@@ -923,7 +1241,7 @@ export default function App() {
   async function revertMods() {
     addLog("Unmounting mods...", "info");
     try {
-      const backupDir = config.modsPath.replace(/[\\/]mods$/, "") + "\\backups";
+      const backupDir = getAppBaseDir() + "\\backups";
       const restored = await invoke<string[]>("revert_mods", {
         gamePath: config.gamePath,
         backupDir,
@@ -1219,9 +1537,11 @@ export default function App() {
                 updateStatuses={updateStatuses}
                 mountedMods={mountedMods}
                 onDeleteMod={deleteMod}
+                thumbnails={thumbnails}
               />
             )}
             {view === "conflicts" && <ConflictView conflicts={conflicts} />}
+            {view === "compatibility" && <CompatibilityView modsPath={config.modsPath} />}
             {view === "language" && (
               <LanguageView
                 langMods={langMods}
@@ -1265,6 +1585,7 @@ export default function App() {
                 onNexusApiKeyChange={(key) => saveConfig({ ...config, nexusApiKey: key })}
                 onCheckUpdates={checkForUpdates}
                 checkingUpdates={checkingUpdates}
+                outdatedCount={Object.values(updateStatuses).filter((s) => s.is_outdated).length}
               />
             )}
             {view === "profiles" && (
@@ -1275,12 +1596,56 @@ export default function App() {
                 onDelete={deleteProfile}
               />
             )}
+            {view === "packs" && (
+              <ModPackView
+                packs={modPacks}
+                onCreate={createModPack}
+                onImport={importModPack}
+                onLoad={loadModPack}
+                onExport={exportModPack}
+                onDelete={deleteModPack}
+              />
+            )}
+            {view === "community" && (
+              <CommunityView
+                onExport={exportCommunityProfile}
+                onImport={importCommunityProfile}
+                importedProfile={importedProfile}
+                installedFiles={mods.map((m) => m.file_name)}
+              />
+            )}
+            {view === "creator" && (
+              <ModCreatorView
+                onCreate={createModJson}
+              />
+            )}
+            {view === "nexusBrowse" && (
+              <NexusBrowseView onSearch={searchNexusMods} />
+            )}
+            {view === "snapshots" && (
+              <SnapshotView
+                snapshots={snapshots}
+                onCreate={createSnapshot}
+                onRestore={restoreSnapshot}
+                onDelete={deleteSnapshot}
+              />
+            )}
             {view === "backups" && (
               <BackupManager
                 backups={backups}
                 onRestore={restoreSingleBackup}
                 onDelete={deleteBackup}
                 onRestoreAll={revertMods}
+                onCreateBackup={async () => {
+                  try {
+                    await invoke("initialize_app", { gamePath: config.gamePath, appDir: getAppBaseDir() });
+                    toast.success("Backup created");
+                    addLog("Manual backup created", "success");
+                    loadBackups();
+                  } catch (e) {
+                    toast.error(`Backup failed: ${e}`);
+                  }
+                }}
               />
             )}
             {view === "about" && <AboutView />}

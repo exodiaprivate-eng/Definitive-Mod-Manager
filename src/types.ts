@@ -91,9 +91,9 @@ export interface InitResult {
 export interface ModProfile {
   name: string;
   created: string;
-  active_mods: ActiveMod[];
-  active_lang_mod: string | null;
-  selected_language: string;
+  activeMods: ActiveMod[];
+  activeLangMod: string | null;
+  selectedLanguage: string;
 }
 
 export interface GameVersion {
@@ -210,4 +210,96 @@ export interface AsiStatus {
   has_loader: boolean;
   loader_name: string | null;
   plugins: AsiPlugin[];
+}
+
+// Mod Packs
+export interface ModPack {
+  name: string;
+  description: string;
+  author: string;
+  created: string;
+  version: string;
+  mods: ModPackEntry[];
+}
+
+export interface ModPackEntry {
+  file_name: string;
+  title: string;
+  version: string;
+  disabled_indices: number[];
+  mod_data: string | null;
+}
+
+// Backup Snapshots
+export interface Snapshot {
+  name: string;
+  created: string;
+  mod_count: number;
+  description: string;
+}
+
+// Compatibility Matrix
+export interface CompatConflict {
+  game_file: string;
+  offset: number;
+  label_a: string;
+  label_b: string;
+}
+
+export interface CompatEntry {
+  mod_a: string;
+  mod_b: string;
+  conflicts: CompatConflict[];
+  compatible: boolean;
+}
+
+// Mod Creator
+export interface NewModData {
+  name: string;
+  version: string;
+  author: string;
+  description: string;
+  patches: NewPatch[];
+}
+
+export interface NewPatch {
+  game_file: string;
+  changes: NewChange[];
+}
+
+export interface NewChange {
+  offset: number;
+  label: string;
+  original: string;
+  patched: string;
+}
+
+// Nexus Search & Browse
+export interface NexusSearchResult {
+  mod_id: number;
+  name: string;
+  summary: string;
+  author: string;
+  category: string;
+  endorsements: number;
+  downloads: number;
+  image_url: string;
+  url: string;
+}
+
+// Community Profiles
+export interface CommunityProfileMod {
+  title: string;
+  version: string;
+  file_name: string;
+  nexus_url: string | null;
+}
+
+export interface CommunityProfile {
+  name: string;
+  author: string;
+  description: string;
+  created: string;
+  mod_count: number;
+  mods: CommunityProfileMod[];
 }

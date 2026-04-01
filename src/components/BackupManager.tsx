@@ -1,4 +1,4 @@
-import { Archive, Trash2, RotateCcw, HardDrive } from "lucide-react";
+import { Archive, Trash2, RotateCcw, HardDrive, FolderPlus } from "lucide-react";
 import type { BackupInfo } from "@/types";
 
 interface BackupManagerProps {
@@ -6,6 +6,7 @@ interface BackupManagerProps {
   onRestore: (fileName: string) => void;
   onDelete: (fileName: string) => void;
   onRestoreAll: () => void;
+  onCreateBackup: () => void;
 }
 
 function formatBytes(bytes: number): string {
@@ -31,7 +32,7 @@ function formatDate(dateStr: string): string {
   }
 }
 
-export function BackupManager({ backups, onRestore, onDelete, onRestoreAll }: BackupManagerProps) {
+export function BackupManager({ backups, onRestore, onDelete, onRestoreAll, onCreateBackup }: BackupManagerProps) {
   return (
     <div className="flex flex-col h-full">
       <div className="shrink-0 px-8 pt-7 pb-5 space-y-5">
@@ -42,15 +43,26 @@ export function BackupManager({ backups, onRestore, onDelete, onRestoreAll }: Ba
               <span className="text-text-secondary font-semibold">{backups.length}</span> backup file{backups.length !== 1 ? "s" : ""} stored
             </p>
           </div>
-          {backups.length > 0 && (
+          <div className="flex items-center gap-3">
             <button
-              onClick={onRestoreAll}
-              className="flex items-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-sm bg-gradient-to-r from-accent to-indigo-500 text-white shadow-[0_0_20px_rgba(99,102,241,0.35)] hover:shadow-[0_0_30px_rgba(99,102,241,0.5)] hover:brightness-110 transition-all"
+              onClick={onCreateBackup}
+              style={{ padding: "8px 16px", fontSize: "13px" }}
+              className="flex items-center gap-2 font-medium text-text-secondary bg-white/[0.03] border border-border/60 rounded-sm hover:bg-white/[0.06] hover:border-border-hover transition-all"
             >
-              <RotateCcw className="w-4 h-4" />
-              Restore All
+              <FolderPlus className="w-4 h-4" />
+              Backup Now
             </button>
-          )}
+            {backups.length > 0 && (
+              <button
+                onClick={onRestoreAll}
+                style={{ padding: "8px 16px", fontSize: "13px" }}
+                className="flex items-center gap-2 font-semibold rounded-sm bg-gradient-to-r from-accent to-indigo-500 text-white shadow-[0_0_20px_rgba(99,102,241,0.35)] hover:shadow-[0_0_30px_rgba(99,102,241,0.5)] hover:brightness-110 transition-all"
+              >
+                <RotateCcw className="w-4 h-4" />
+                Restore All
+              </button>
+            )}
+          </div>
         </div>
       </div>
 

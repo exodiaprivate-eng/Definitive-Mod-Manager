@@ -112,11 +112,11 @@ export function ProfileManager({ profiles, onSave, onLoad, onDelete }: ProfileMa
                         {formatDate(profile.created)}
                       </span>
                       <span className="text-sm text-text-muted">
-                        <span className="text-accent font-semibold">{profile.active_mods.length}</span> mods
+                        <span className="text-accent font-semibold">{profile.activeMods.length}</span> mods
                       </span>
-                      {profile.active_lang_mod && (
+                      {profile.activeLangMod && (
                         <span className="text-[11px] font-mono bg-white/[0.03] text-text-muted px-2.5 py-1 rounded-sm border border-border/30">
-                          {profile.selected_language}
+                          {profile.selectedLanguage}
                         </span>
                       )}
                     </div>

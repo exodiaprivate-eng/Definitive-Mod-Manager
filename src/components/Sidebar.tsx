@@ -11,9 +11,15 @@ import {
   Gamepad2,
   Plug,
   Paintbrush,
+  Package,
+  Camera,
+  Hammer,
+  Grid3x3,
+  Search,
+  Users,
 } from "lucide-react";
 
-export type View = "mods" | "conflicts" | "language" | "asi" | "reshade" | "profiles" | "backups" | "settings" | "about";
+export type View = "mods" | "conflicts" | "compatibility" | "language" | "asi" | "reshade" | "profiles" | "packs" | "community" | "creator" | "snapshots" | "backups" | "nexusBrowse" | "settings" | "about";
 
 interface SidebarProps {
   activeView: View;
@@ -92,6 +98,12 @@ export function Sidebar({ activeView, onViewChange, modCount, activeCount, confl
               badgeColor={conflictCount > 0 ? "bg-danger/20 text-danger" : undefined}
             />
             <NavItem
+              icon={<Grid3x3 className="w-5 h-5" />}
+              label="Compatibility"
+              active={activeView === "compatibility"}
+              onClick={() => onViewChange("compatibility")}
+            />
+            <NavItem
               icon={<Globe className="w-5 h-5" />}
               label="Language"
               active={activeView === "language"}
@@ -110,6 +122,24 @@ export function Sidebar({ activeView, onViewChange, modCount, activeCount, confl
               active={activeView === "profiles"}
               onClick={() => onViewChange("profiles")}
             />
+            <NavItem
+              icon={<Package className="w-5 h-5" />}
+              label="Packs"
+              active={activeView === "packs"}
+              onClick={() => onViewChange("packs")}
+            />
+            <NavItem
+              icon={<Users className="w-5 h-5" />}
+              label="Community"
+              active={activeView === "community"}
+              onClick={() => onViewChange("community")}
+            />
+            <NavItem
+              icon={<Hammer className="w-5 h-5" />}
+              label="Create Mod"
+              active={activeView === "creator"}
+              onClick={() => onViewChange("creator")}
+            />
           </div>
         </div>
 
@@ -125,10 +155,22 @@ export function Sidebar({ activeView, onViewChange, modCount, activeCount, confl
               onClick={() => onViewChange("reshade")}
             />
             <NavItem
+              icon={<Camera className="w-5 h-5" />}
+              label="Snapshots"
+              active={activeView === "snapshots"}
+              onClick={() => onViewChange("snapshots")}
+            />
+            <NavItem
               icon={<Archive className="w-5 h-5" />}
               label="Backups"
               active={activeView === "backups"}
               onClick={() => onViewChange("backups")}
+            />
+            <NavItem
+              icon={<Search className="w-5 h-5" />}
+              label="Browse Nexus"
+              active={activeView === "nexusBrowse"}
+              onClick={() => onViewChange("nexusBrowse")}
             />
             <NavItem
               icon={<Settings className="w-5 h-5" />}

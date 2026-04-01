@@ -11,6 +11,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useState } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import type { ModEntry, ModChange, ModUpdateStatus } from "@/types";
 
 interface PatchDetail {
@@ -30,9 +31,10 @@ interface ModCardProps {
   updateStatus?: ModUpdateStatus;
   isMounted?: boolean;
   onDelete?: (fileName: string) => void;
+  thumbnailPath?: string;
 }
 
-export function ModCard({ mod, index, onToggle, dragHandleProps, disabledIndices = [], onTogglePatch, details, onExpand, updateStatus, isMounted, onDelete }: ModCardProps) {
+export function ModCard({ mod, index, onToggle, dragHandleProps, disabledIndices = [], onTogglePatch, details, onExpand, updateStatus, isMounted, onDelete, thumbnailPath }: ModCardProps) {
   const [expanded, setExpanded] = useState(false);
 
   function handleExpandToggle() {
@@ -122,6 +124,13 @@ export function ModCard({ mod, index, onToggle, dragHandleProps, disabledIndices
         {/* Info */}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-3">
+            {thumbnailPath && (
+              <img
+                src={convertFileSrc(thumbnailPath)}
+                alt=""
+                className="w-10 h-10 rounded-sm object-cover border border-border/30 shrink-0"
+              />
+            )}
             <h3 className={cn(
               "text-base font-semibold truncate transition-colors",
               mod.enabled ? "text-text-primary" : "text-text-secondary"

@@ -1,3 +1,4 @@
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::{Deserialize, Serialize};
 use sha2::{Sha256, Digest};
 use std::collections::HashMap;
@@ -1317,6 +1318,25 @@ pub fn get_app_dir() -> Result<String, String> {
     let dir = exe.parent()
         .ok_or_else(|| "Failed to get exe directory".to_string())?;
     Ok(dir.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn get_nexus_api_key() -> Result<String, String> {
+    // Try loading from nexus_api_key.txt next to the exe
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let key_file = dir.join("nexus_api_key.txt");
+            if key_file.exists() {
+                if let Ok(key) = fs::read_to_string(&key_file) {
+                    let key = key.trim().to_string();
+                    if !key.is_empty() {
+                        return Ok(key);
+                    }
+                }
+            }
+        }
+    }
+    Ok(String::new())
 }
 
 #[tauri::command]
@@ -3002,9 +3022,71 @@ pub fn check_mod_updates(
     mod_ids: Vec<NexusIdMapping>,
     mods_path: String,
 ) -> Result<Vec<ModUpdateStatus>, String> {
-    Err("Nexus API calls disabled in this build".to_string())
-}
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("DefinitiveModManager/1.0.0")
+        .build()
+        .map_err(|e| format!("HTTP client error: {}", e))?;
 
+    let mut results = Vec::new();
+    for mapping in &mod_ids {
+        let url = format!(
+            "https://api.nexusmods.com/v1/games/crimsondesert/mods/{}.json",
+            mapping.nexus_mod_id
+        );
+        let local_version = {
+            let mod_path = Path::new(&mods_path).join(&mapping.file_name);
+            if let Ok(mod_file) = parse_mod_file(&mod_path) {
+                let (_, v, _, _) = get_mod_display_info(&mod_file);
+                v
+            } else {
+                "?".to_string()
+            }
+        };
+
+        match client.get(&url).header("apikey", &api_key).send() {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    if let Ok(data) = resp.json::<serde_json::Value>() {
+                        let nexus_version = data["version"].as_str().unwrap_or("?").to_string();
+                        let nexus_url = format!("https://www.nexusmods.com/crimsondesert/mods/{}", mapping.nexus_mod_id);
+                        let is_outdated = nexus_version != local_version && nexus_version != "?" && local_version != "?";
+                        results.push(ModUpdateStatus {
+                            file_name: mapping.file_name.clone(),
+                            nexus_mod_id: Some(mapping.nexus_mod_id),
+                            local_version,
+                            nexus_version: Some(nexus_version),
+                            is_outdated,
+                            nexus_url: Some(nexus_url),
+                            error: None,
+                        });
+                    }
+                } else {
+                    results.push(ModUpdateStatus {
+                        file_name: mapping.file_name.clone(),
+                        nexus_mod_id: Some(mapping.nexus_mod_id),
+                        local_version,
+                        nexus_version: None,
+                        is_outdated: false,
+                        nexus_url: None,
+                        error: Some(format!("API returned {}", resp.status())),
+                    });
+                }
+            }
+            Err(e) => {
+                results.push(ModUpdateStatus {
+                    file_name: mapping.file_name.clone(),
+                    nexus_mod_id: Some(mapping.nexus_mod_id),
+                    local_version,
+                    nexus_version: None,
+                    is_outdated: false,
+                    nexus_url: None,
+                    error: Some(format!("{}", e)),
+                });
+            }
+        }
+    }
+    Ok(results)
+}
 
 #[tauri::command]
 pub fn search_nexus_by_name(
@@ -3012,9 +3094,64 @@ pub fn search_nexus_by_name(
     mod_name: String,
     mods_path: String,
 ) -> Result<Option<NexusCacheEntry>, String> {
-    Err("Nexus API calls disabled in this build".to_string())
+    let clean_name = mod_name
+        .replace(".json", "")
+        .replace('_', " ")
+        .replace('-', " ");
+
+    let url = format!(
+        "https://search.nexusmods.com/mods?terms={}&game_id=7640&blocked_tags=&blocked_authors=&include_adult=true",
+        urlencoding(&clean_name)
+    );
+
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("DefinitiveModManager/1.0.0")
+        .build()
+        .map_err(|e| format!("HTTP client error: {}", e))?;
+
+    let resp = client.get(&url).send()
+        .map_err(|e| format!("Search failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+
+    let data: serde_json::Value = resp.json()
+        .map_err(|e| format!("Parse error: {}", e))?;
+
+    let results = data["results"].as_array();
+    if let Some(results) = results {
+        let clean_lower = clean_name.to_lowercase();
+        for result in results {
+            let name = result["name"].as_str().unwrap_or("");
+            let mod_id = result["mod_id"].as_u64().unwrap_or(0);
+            if mod_id > 0 {
+                let entry = NexusCacheEntry {
+                    file_name: mod_name.clone(),
+                    nexus_mod_id: mod_id,
+                    nexus_name: name.to_string(),
+                    last_checked: chrono::Local::now().to_rfc3339(),
+                };
+                // Save to cache
+                let cache_path = Path::new(&mods_path).join("_nexus_cache.json");
+                let mut cache = load_nexus_cache_internal(&mods_path);
+                cache.retain(|e| e.file_name != mod_name);
+                cache.push(entry.clone());
+                let _ = fs::write(&cache_path, serde_json::to_string_pretty(&cache).unwrap_or_default());
+                return Ok(Some(entry));
+            }
+        }
+    }
+    Ok(None)
 }
 
+fn urlencoding(s: &str) -> String {
+    s.chars().map(|c| match c {
+        'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
+        ' ' => "+".to_string(),
+        _ => format!("%{:02X}", c as u8),
+    }).collect()
+}
 
 #[tauri::command]
 pub fn search_all_unmatched_mods(
@@ -3022,7 +3159,32 @@ pub fn search_all_unmatched_mods(
     mods_path: String,
     known_mappings: Vec<NexusIdMapping>,
 ) -> Result<Vec<NexusIdMapping>, String> {
-    Ok(Vec::new())
+    let mods_dir = Path::new(&mods_path);
+    let known_files: Vec<&str> = known_mappings.iter().map(|m| m.file_name.as_str()).collect();
+    let mut new_mappings = Vec::new();
+
+    if let Ok(entries) = fs::read_dir(mods_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let file_name = path.file_name().unwrap().to_string_lossy().to_string();
+            if known_files.contains(&file_name.as_str()) {
+                continue;
+            }
+            if let Ok(Some(cache_entry)) = search_nexus_by_name(api_key.clone(), file_name.clone(), mods_path.clone()) {
+                new_mappings.push(NexusIdMapping {
+                    file_name,
+                    nexus_mod_id: cache_entry.nexus_mod_id,
+                    folder_name: String::new(),
+                });
+            }
+            // Rate limit: 500ms between searches
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    }
+    Ok(new_mappings)
 }
 
 
@@ -3568,5 +3730,829 @@ pub fn open_asi_config(game_path: String, plugin_name: String) -> Result<(), Str
 
 #[tauri::command]
 pub fn install_asi_loader(game_path: String) -> Result<String, String> {
-    Err("ASI Loader download disabled in this build".to_string())
+    let bin64 = Path::new(&game_path).join("bin64");
+    if !bin64.exists() {
+        return Err("bin64 directory not found".to_string());
+    }
+
+    let loader_names = ["version.dll", "winmm.dll", "dinput8.dll", "dsound.dll"];
+    for name in &loader_names {
+        if bin64.join(name).exists() {
+            return Err(format!("ASI Loader already installed as {}", name));
+        }
+    }
+
+    let url = "https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/download/v9.7.0/Ultimate-ASI-Loader_x64.zip";
+    let response = reqwest::blocking::Client::new()
+        .get(url)
+        .header("User-Agent", "DefinitiveModManager/1.0.0")
+        .send()
+        .map_err(|e| format!("Download failed: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!("Download failed with status: {}", response.status()));
+    }
+
+    let zip_bytes = response.bytes()
+        .map_err(|e| format!("Failed to read download: {}", e))?;
+
+    let cursor = std::io::Cursor::new(zip_bytes);
+    let mut archive = zip::ZipArchive::new(cursor)
+        .map_err(|e| format!("Failed to read zip: {}", e))?;
+
+    let target_name = "version.dll";
+    let mut found_dll = false;
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)
+            .map_err(|e| format!("Zip entry error: {}", e))?;
+        let name = file.name().to_lowercase();
+        if name.ends_with(".dll") && !name.contains('/') {
+            let dest = bin64.join(target_name);
+            let mut content = Vec::new();
+            std::io::Read::read_to_end(&mut file, &mut content)
+                .map_err(|e| format!("Failed to extract: {}", e))?;
+            fs::write(&dest, &content)
+                .map_err(|e| format!("Failed to write {}: {}", target_name, e))?;
+            found_dll = true;
+            break;
+        }
+    }
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)
+            .map_err(|e| format!("Zip entry error: {}", e))?;
+        let name = file.name().to_string();
+        if name.to_lowercase().ends_with(".ini") && !name.contains('/') {
+            let dest = bin64.join(&name);
+            let mut content = Vec::new();
+            std::io::Read::read_to_end(&mut file, &mut content)
+                .map_err(|e| format!("Failed to extract: {}", e))?;
+            fs::write(&dest, &content)
+                .map_err(|e| format!("Failed to write {}: {}", name, e))?;
+        }
+    }
+
+    if found_dll {
+        Ok(format!("ASI Loader installed as {} in bin64/", target_name))
+    } else {
+        Err("No DLL found in the downloaded archive".to_string())
+    }
+}
+
+// =============================================================================
+// Mod Packs
+// =============================================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ModPack {
+    pub name: String,
+    pub description: String,
+    pub author: String,
+    pub created: String,
+    pub version: String,
+    pub mods: Vec<ModPackEntry>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ModPackEntry {
+    pub file_name: String,
+    pub title: String,
+    pub version: String,
+    pub disabled_indices: Vec<usize>,
+    pub mod_data: Option<String>,
+}
+
+#[tauri::command]
+pub fn create_mod_pack(
+    name: String,
+    description: String,
+    author: String,
+    mods_path: String,
+    active_mods: Vec<ActiveMod>,
+) -> Result<String, String> {
+    let mods_dir = Path::new(&mods_path);
+    let packs_dir = mods_dir.parent()
+        .ok_or("Cannot determine parent directory")?
+        .join("packs");
+
+    if !packs_dir.exists() {
+        fs::create_dir_all(&packs_dir)
+            .map_err(|e| format!("Failed to create packs directory: {}", e))?;
+    }
+
+    let mut entries = Vec::new();
+    for am in &active_mods {
+        let mod_path = mods_dir.join(&am.file_name);
+        if !mod_path.exists() {
+            continue;
+        }
+
+        let content = fs::read_to_string(&mod_path)
+            .map_err(|e| format!("Failed to read mod {}: {}", am.file_name, e))?;
+
+        let mod_file: ModFile = serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse mod {}: {}", am.file_name, e))?;
+
+        let (title, version, _author, _desc) = get_mod_display_info(&mod_file);
+
+        let encoded = BASE64.encode(content.as_bytes());
+
+        entries.push(ModPackEntry {
+            file_name: am.file_name.clone(),
+            title,
+            version,
+            disabled_indices: am.disabled_indices.clone(),
+            mod_data: Some(encoded),
+        });
+    }
+
+    let pack = ModPack {
+        name: name.clone(),
+        description,
+        author,
+        created: chrono::Local::now().to_rfc3339(),
+        version: "1.0".to_string(),
+        mods: entries,
+    };
+
+    let file_name = format!("{}.dmpack", sanitize_filename(&name));
+    let pack_path = packs_dir.join(&file_name);
+
+    let content = serde_json::to_string_pretty(&pack)
+        .map_err(|e| format!("Failed to serialize mod pack: {}", e))?;
+    fs::write(&pack_path, content)
+        .map_err(|e| format!("Failed to write mod pack: {}", e))?;
+
+    Ok(pack_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn import_mod_pack(
+    pack_path: String,
+    mods_path: String,
+) -> Result<ModPack, String> {
+    let content = fs::read_to_string(&pack_path)
+        .map_err(|e| format!("Failed to read pack file: {}", e))?;
+    let pack: ModPack = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse pack file: {}", e))?;
+
+    let mods_dir = Path::new(&mods_path);
+    if !mods_dir.exists() {
+        fs::create_dir_all(mods_dir)
+            .map_err(|e| format!("Failed to create mods directory: {}", e))?;
+    }
+
+    for entry in &pack.mods {
+        if let Some(ref data) = entry.mod_data {
+            let decoded = BASE64.decode(data)
+                .map_err(|e| format!("Failed to decode mod data for {}: {}", entry.file_name, e))?;
+            let dest = mods_dir.join(&entry.file_name);
+            fs::write(&dest, decoded)
+                .map_err(|e| format!("Failed to write mod {}: {}", entry.file_name, e))?;
+        }
+    }
+
+    Ok(pack)
+}
+
+#[tauri::command]
+pub fn list_mod_packs(packs_path: String) -> Result<Vec<ModPack>, String> {
+    let dir = Path::new(&packs_path);
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut packs = Vec::new();
+    let entries = fs::read_dir(dir)
+        .map_err(|e| format!("Failed to read packs directory: {}", e))?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Dir entry error: {}", e))?;
+        let path = entry.path();
+
+        if path.extension().and_then(|e| e.to_str()) != Some("dmpack") {
+            continue;
+        }
+
+        match fs::read_to_string(&path) {
+            Ok(content) => {
+                if let Ok(pack) = serde_json::from_str::<ModPack>(&content) {
+                    packs.push(pack);
+                }
+            }
+            Err(e) => {
+                log::warn!("Skipping pack {}: {}", path.display(), e);
+            }
+        }
+    }
+
+    packs.sort_by(|a, b| b.created.cmp(&a.created));
+    Ok(packs)
+}
+
+#[tauri::command]
+pub fn delete_mod_pack(packs_path: String, pack_name: String) -> Result<(), String> {
+    let file_name = format!("{}.dmpack", sanitize_filename(&pack_name));
+    let path = Path::new(&packs_path).join(&file_name);
+
+    if !path.exists() {
+        return Err(format!("Pack '{}' not found", pack_name));
+    }
+
+    fs::remove_file(&path)
+        .map_err(|e| format!("Failed to delete pack '{}': {}", pack_name, e))
+}
+
+// =============================================================================
+// Backup Snapshots
+// =============================================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Snapshot {
+    pub name: String,
+    pub created: String,
+    pub mod_count: usize,
+    pub description: String,
+}
+
+#[tauri::command]
+pub fn create_snapshot(
+    name: String,
+    description: String,
+    mods_path: String,
+    backup_dir: String,
+    config: AppConfig,
+) -> Result<Snapshot, String> {
+    let snapshots_dir = Path::new(&backup_dir).join("snapshots").join(sanitize_filename(&name));
+    if snapshots_dir.exists() {
+        return Err(format!("Snapshot '{}' already exists", name));
+    }
+    fs::create_dir_all(&snapshots_dir)
+        .map_err(|e| format!("Failed to create snapshot directory: {}", e))?;
+
+    // Save the config
+    let config_json = serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    fs::write(snapshots_dir.join("config.json"), &config_json)
+        .map_err(|e| format!("Failed to write config snapshot: {}", e))?;
+
+    // Copy all active mod files
+    let mods_dir = Path::new(&mods_path);
+    let mods_snapshot_dir = snapshots_dir.join("mods");
+    fs::create_dir_all(&mods_snapshot_dir)
+        .map_err(|e| format!("Failed to create mods snapshot dir: {}", e))?;
+
+    let mut mod_count = 0;
+    for am in &config.active_mods {
+        let src = mods_dir.join(&am.file_name);
+        if src.exists() {
+            let dest = mods_snapshot_dir.join(&am.file_name);
+            fs::copy(&src, &dest)
+                .map_err(|e| format!("Failed to copy mod {}: {}", am.file_name, e))?;
+            mod_count += 1;
+        }
+    }
+
+    let snapshot = Snapshot {
+        name: name.clone(),
+        created: chrono::Local::now().to_rfc3339(),
+        mod_count,
+        description: description.clone(),
+    };
+
+    let meta_json = serde_json::to_string_pretty(&snapshot)
+        .map_err(|e| format!("Failed to serialize snapshot meta: {}", e))?;
+    fs::write(snapshots_dir.join("snapshot.json"), &meta_json)
+        .map_err(|e| format!("Failed to write snapshot meta: {}", e))?;
+
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub fn list_snapshots(backup_dir: String) -> Result<Vec<Snapshot>, String> {
+    let snapshots_dir = Path::new(&backup_dir).join("snapshots");
+    if !snapshots_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut snapshots = Vec::new();
+    let entries = fs::read_dir(&snapshots_dir)
+        .map_err(|e| format!("Failed to read snapshots directory: {}", e))?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Dir entry error: {}", e))?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let meta_path = path.join("snapshot.json");
+        if !meta_path.exists() {
+            continue;
+        }
+
+        match fs::read_to_string(&meta_path) {
+            Ok(content) => {
+                if let Ok(snapshot) = serde_json::from_str::<Snapshot>(&content) {
+                    snapshots.push(snapshot);
+                }
+            }
+            Err(e) => {
+                log::warn!("Skipping snapshot {}: {}", path.display(), e);
+            }
+        }
+    }
+
+    snapshots.sort_by(|a, b| b.created.cmp(&a.created));
+    Ok(snapshots)
+}
+
+#[tauri::command]
+pub fn restore_snapshot(
+    name: String,
+    backup_dir: String,
+    mods_path: String,
+) -> Result<AppConfig, String> {
+    let snapshot_dir = Path::new(&backup_dir)
+        .join("snapshots")
+        .join(sanitize_filename(&name));
+
+    if !snapshot_dir.exists() {
+        return Err(format!("Snapshot '{}' not found", name));
+    }
+
+    // Read the saved config
+    let config_path = snapshot_dir.join("config.json");
+    let config_content = fs::read_to_string(&config_path)
+        .map_err(|e| format!("Failed to read snapshot config: {}", e))?;
+    let config: AppConfig = serde_json::from_str(&config_content)
+        .map_err(|e| format!("Failed to parse snapshot config: {}", e))?;
+
+    // Restore mod files
+    let mods_snapshot_dir = snapshot_dir.join("mods");
+    if mods_snapshot_dir.exists() {
+        let mods_dir = Path::new(&mods_path);
+        if !mods_dir.exists() {
+            fs::create_dir_all(mods_dir)
+                .map_err(|e| format!("Failed to create mods directory: {}", e))?;
+        }
+
+        let entries = fs::read_dir(&mods_snapshot_dir)
+            .map_err(|e| format!("Failed to read snapshot mods: {}", e))?;
+
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("Dir entry error: {}", e))?;
+            let src = entry.path();
+            if let Some(file_name) = src.file_name() {
+                let dest = mods_dir.join(file_name);
+                fs::copy(&src, &dest)
+                    .map_err(|e| format!("Failed to restore mod {}: {}", file_name.to_string_lossy(), e))?;
+            }
+        }
+    }
+
+    Ok(config)
+}
+
+#[tauri::command]
+pub fn delete_snapshot(name: String, backup_dir: String) -> Result<(), String> {
+    let snapshot_dir = Path::new(&backup_dir)
+        .join("snapshots")
+        .join(sanitize_filename(&name));
+
+    if !snapshot_dir.exists() {
+        return Err(format!("Snapshot '{}' not found", name));
+    }
+
+    fs::remove_dir_all(&snapshot_dir)
+        .map_err(|e| format!("Failed to delete snapshot '{}': {}", name, e))
+}
+
+// =============================================================================
+// Mod Creator
+// =============================================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NewModData {
+    pub name: String,
+    pub version: String,
+    pub author: String,
+    pub description: String,
+    pub patches: Vec<NewPatch>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NewPatch {
+    pub game_file: String,
+    pub changes: Vec<NewChange>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NewChange {
+    pub offset: u64,
+    pub label: String,
+    pub original: String,
+    pub patched: String,
+}
+
+#[tauri::command]
+pub fn create_mod_json(
+    mods_path: String,
+    mod_data: NewModData,
+) -> Result<String, String> {
+    let mods_dir = Path::new(&mods_path);
+    if !mods_dir.exists() {
+        fs::create_dir_all(mods_dir)
+            .map_err(|e| format!("Failed to create mods directory: {}", e))?;
+    }
+
+    // Validate hex values
+    for patch in &mod_data.patches {
+        for change in &patch.changes {
+            hex::decode(&change.original)
+                .map_err(|e| format!("Invalid hex in original for '{}': {}", change.label, e))?;
+            hex::decode(&change.patched)
+                .map_err(|e| format!("Invalid hex in patched for '{}': {}", change.label, e))?;
+
+            let orig_bytes = hex::decode(&change.original).unwrap();
+            let patch_bytes = hex::decode(&change.patched).unwrap();
+            if orig_bytes.len() != patch_bytes.len() {
+                return Err(format!(
+                    "Byte length mismatch for '{}': original {} bytes vs patched {} bytes",
+                    change.label, orig_bytes.len(), patch_bytes.len()
+                ));
+            }
+        }
+    }
+
+    // Build the mod JSON structure
+    let mod_json = serde_json::json!({
+        "modinfo": {
+            "title": mod_data.name,
+            "version": mod_data.version,
+            "author": mod_data.author,
+            "description": mod_data.description
+        },
+        "patches": mod_data.patches.iter().map(|p| {
+            serde_json::json!({
+                "game_file": p.game_file,
+                "changes": p.changes.iter().map(|c| {
+                    serde_json::json!({
+                        "offset": c.offset,
+                        "label": c.label,
+                        "original": c.original,
+                        "patched": c.patched
+                    })
+                }).collect::<Vec<_>>()
+            })
+        }).collect::<Vec<_>>()
+    });
+
+    let file_name = format!("{}.json", sanitize_filename(&mod_data.name));
+    let path = mods_dir.join(&file_name);
+
+    let content = serde_json::to_string_pretty(&mod_json)
+        .map_err(|e| format!("Failed to serialize mod: {}", e))?;
+    fs::write(&path, content)
+        .map_err(|e| format!("Failed to write mod file: {}", e))?;
+
+    Ok(path.to_string_lossy().to_string())
+}
+
+// =============================================================================
+// Mod Compatibility Matrix
+// =============================================================================
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CompatConflict {
+    pub game_file: String,
+    pub offset: u64,
+    pub label_a: String,
+    pub label_b: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CompatEntry {
+    pub mod_a: String,
+    pub mod_b: String,
+    pub conflicts: Vec<CompatConflict>,
+    pub compatible: bool,
+}
+
+#[tauri::command]
+pub fn get_compatibility_matrix(mods_path: String) -> Result<Vec<CompatEntry>, String> {
+    let mods_dir = Path::new(&mods_path);
+    if !mods_dir.exists() {
+        return Err("Mods directory does not exist".to_string());
+    }
+
+    // Load all mods and their patches
+    let mut all_mods: Vec<(String, Vec<(String, u64, String)>)> = Vec::new();
+
+    let read_dir = fs::read_dir(mods_dir)
+        .map_err(|e| format!("Failed to read mods directory: {}", e))?;
+
+    for entry in read_dir {
+        let entry = entry.map_err(|e| format!("Dir entry error: {}", e))?;
+        let path = entry.path();
+
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+
+        if let Ok(mod_file) = parse_mod_file(&path) {
+            let (title, _, _, _) = get_mod_display_info(&mod_file);
+            let mut patches: Vec<(String, u64, String)> = Vec::new();
+            for patch in &mod_file.patches {
+                for change in &patch.changes {
+                    patches.push((patch.game_file.clone(), change.offset, change.label.clone()));
+                }
+            }
+            all_mods.push((title, patches));
+        }
+    }
+
+    let mut matrix: Vec<CompatEntry> = Vec::new();
+
+    for i in 0..all_mods.len() {
+        for j in (i + 1)..all_mods.len() {
+            let (ref name_a, ref patches_a) = all_mods[i];
+            let (ref name_b, ref patches_b) = all_mods[j];
+
+            let mut conflicts: Vec<CompatConflict> = Vec::new();
+
+            for (gf_a, off_a, label_a) in patches_a {
+                for (gf_b, off_b, label_b) in patches_b {
+                    if gf_a == gf_b && off_a == off_b {
+                        conflicts.push(CompatConflict {
+                            game_file: gf_a.clone(),
+                            offset: *off_a,
+                            label_a: label_a.clone(),
+                            label_b: label_b.clone(),
+                        });
+                    }
+                }
+            }
+
+            let compatible = conflicts.is_empty();
+            matrix.push(CompatEntry {
+                mod_a: name_a.clone(),
+                mod_b: name_b.clone(),
+                conflicts,
+                compatible,
+            });
+        }
+    }
+
+    Ok(matrix)
+}
+
+// =============================================================================
+// Nexus Mod Thumbnail Fetching
+// =============================================================================
+
+#[tauri::command]
+pub fn fetch_mod_thumbnail(nexus_mod_id: u64, api_key: String, cache_dir: String) -> Result<String, String> {
+    let thumbs_dir = Path::new(&cache_dir).join("thumbs");
+    let cached_path = thumbs_dir.join(format!("{}.jpg", nexus_mod_id));
+
+    // Return cached file immediately if it exists
+    if cached_path.exists() {
+        return Ok(cached_path.to_string_lossy().to_string());
+    }
+
+    // Ensure thumbs directory exists
+    fs::create_dir_all(&thumbs_dir)
+        .map_err(|e| format!("Failed to create thumbs directory: {}", e))?;
+
+    // Query Nexus API for mod info
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("DefinitiveModManager/1.0.0")
+        .build()
+        .map_err(|e| format!("HTTP client error: {}", e))?;
+
+    let url = format!(
+        "https://api.nexusmods.com/v1/games/crimsondesert/mods/{}.json",
+        nexus_mod_id
+    );
+
+    let resp = client.get(&url)
+        .header("apikey", &api_key)
+        .send()
+        .map_err(|e| format!("API request failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Nexus API returned {}", resp.status()));
+    }
+
+    let data: serde_json::Value = resp.json()
+        .map_err(|e| format!("Failed to parse API response: {}", e))?;
+
+    let picture_url = data["picture_url"]
+        .as_str()
+        .ok_or_else(|| "No picture_url in mod info".to_string())?;
+
+    // Download the thumbnail image
+    let img_resp = client.get(picture_url)
+        .send()
+        .map_err(|e| format!("Failed to download thumbnail: {}", e))?;
+
+    if !img_resp.status().is_success() {
+        return Err(format!("Image download returned {}", img_resp.status()));
+    }
+
+    let bytes = img_resp.bytes()
+        .map_err(|e| format!("Failed to read image bytes: {}", e))?;
+
+    fs::write(&cached_path, &bytes)
+        .map_err(|e| format!("Failed to save thumbnail: {}", e))?;
+
+    Ok(cached_path.to_string_lossy().to_string())
+}
+
+// =============================================================================
+// Nexus Mod Search & Browse (Feature 7)
+// =============================================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NexusSearchResult {
+    pub mod_id: u64,
+    pub name: String,
+    pub summary: String,
+    pub author: String,
+    pub category: String,
+    pub endorsements: u64,
+    pub downloads: u64,
+    pub image_url: String,
+    pub url: String,
+}
+
+#[tauri::command]
+pub fn search_nexus_mods(query: String, api_key: String) -> Result<Vec<NexusSearchResult>, String> {
+    let _ = &api_key; // Available for future authenticated search
+    let encoded = urlencoding(&query);
+    let url = format!(
+        "https://search.nexusmods.com/mods?terms={}&game_id=7640&blocked_tags=&blocked_authors=&include_adult=true",
+        encoded
+    );
+
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("DefinitiveModManager/1.0.0")
+        .build()
+        .map_err(|e| format!("HTTP client error: {}", e))?;
+
+    let resp = client.get(&url).send()
+        .map_err(|e| format!("Search failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Nexus search returned {}", resp.status()));
+    }
+
+    let data: serde_json::Value = resp.json()
+        .map_err(|e| format!("Failed to parse search response: {}", e))?;
+
+    let mut results = Vec::new();
+    if let Some(arr) = data["results"].as_array() {
+        for item in arr.iter().take(20) {
+            let mod_id = item["mod_id"].as_u64().unwrap_or(0);
+            if mod_id == 0 {
+                continue;
+            }
+            results.push(NexusSearchResult {
+                mod_id,
+                name: item["name"].as_str().unwrap_or("").to_string(),
+                summary: item["summary"].as_str().unwrap_or("").to_string(),
+                author: item["username"].as_str()
+                    .or_else(|| item["author"].as_str())
+                    .unwrap_or("Unknown").to_string(),
+                category: item["category"].as_str().unwrap_or("").to_string(),
+                endorsements: item["endorsements"].as_u64()
+                    .or_else(|| item["endorsement_count"].as_u64())
+                    .unwrap_or(0),
+                downloads: item["downloads"].as_u64()
+                    .or_else(|| item["total_downloads"].as_u64())
+                    .unwrap_or(0),
+                image_url: item["image"].as_str()
+                    .or_else(|| item["picture_url"].as_str())
+                    .unwrap_or("").to_string(),
+                url: format!("https://www.nexusmods.com/crimsondesert/mods/{}", mod_id),
+            });
+        }
+    }
+
+    Ok(results)
+}
+
+#[tauri::command]
+pub fn get_nexus_mod_details(mod_id: u64, api_key: String) -> Result<serde_json::Value, String> {
+    let url = format!(
+        "https://api.nexusmods.com/v1/games/crimsondesert/mods/{}.json",
+        mod_id
+    );
+
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("DefinitiveModManager/1.0.0")
+        .build()
+        .map_err(|e| format!("HTTP client error: {}", e))?;
+
+    let resp = client.get(&url)
+        .header("apikey", &api_key)
+        .send()
+        .map_err(|e| format!("API request failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Nexus API returned {}", resp.status()));
+    }
+
+    let data: serde_json::Value = resp.json()
+        .map_err(|e| format!("Failed to parse mod details: {}", e))?;
+
+    Ok(data)
+}
+
+// =============================================================================
+// Community Profiles (Feature 8)
+// =============================================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CommunityProfileMod {
+    pub title: String,
+    pub version: String,
+    pub file_name: String,
+    pub nexus_url: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CommunityProfile {
+    pub name: String,
+    pub author: String,
+    pub description: String,
+    pub created: String,
+    pub mod_count: usize,
+    pub mods: Vec<CommunityProfileMod>,
+}
+
+#[tauri::command]
+pub fn export_community_profile(
+    name: String,
+    author: String,
+    description: String,
+    mods_path: String,
+    active_mods: Vec<ActiveMod>,
+    update_statuses: HashMap<String, ModUpdateStatus>,
+) -> Result<String, String> {
+    let mods_dir = Path::new(&mods_path);
+    let mut profile_mods = Vec::new();
+
+    for am in &active_mods {
+        let mod_path = mods_dir.join(&am.file_name);
+        if !mod_path.exists() {
+            continue;
+        }
+
+        let mod_file = parse_mod_file(&mod_path)?;
+        let (title, version, _author, _desc) = get_mod_display_info(&mod_file);
+
+        let nexus_url = update_statuses.get(&am.file_name)
+            .and_then(|s| s.nexus_url.clone());
+
+        profile_mods.push(CommunityProfileMod {
+            title,
+            version,
+            file_name: am.file_name.clone(),
+            nexus_url,
+        });
+    }
+
+    let profile = CommunityProfile {
+        name: name.clone(),
+        author,
+        description,
+        created: chrono::Local::now().to_rfc3339(),
+        mod_count: profile_mods.len(),
+        mods: profile_mods,
+    };
+
+    let content = serde_json::to_string_pretty(&profile)
+        .map_err(|e| format!("Failed to serialize profile: {}", e))?;
+
+    // Default save location next to the mods folder
+    let default_dir = mods_dir.parent().unwrap_or(mods_dir);
+    let default_path = default_dir.join(format!("{}.dmprofile", sanitize_filename(&name)));
+
+    // Write to the default path (frontend handles the save dialog)
+    fs::write(&default_path, content)
+        .map_err(|e| format!("Failed to write profile: {}", e))?;
+
+    Ok(default_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn import_community_profile(profile_path: String) -> Result<CommunityProfile, String> {
+    let content = fs::read_to_string(&profile_path)
+        .map_err(|e| format!("Failed to read profile file: {}", e))?;
+    let profile: CommunityProfile = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse profile file: {}", e))?;
+    Ok(profile)
 }

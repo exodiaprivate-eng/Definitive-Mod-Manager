@@ -67,6 +67,7 @@ pub fn run() {
             commands::load_nexus_cache,
             // App Initialization
             commands::get_app_dir,
+            commands::get_nexus_api_key,
             commands::initialize_app,
             commands::open_folder,
             // ReShade
@@ -82,6 +83,28 @@ pub fn run() {
             commands::uninstall_asi_mod,
             commands::open_asi_config,
             commands::install_asi_loader,
+            // Mod Packs
+            commands::create_mod_pack,
+            commands::import_mod_pack,
+            commands::list_mod_packs,
+            commands::delete_mod_pack,
+            // Backup Snapshots
+            commands::create_snapshot,
+            commands::list_snapshots,
+            commands::restore_snapshot,
+            commands::delete_snapshot,
+            // Mod Creator
+            commands::create_mod_json,
+            // Compatibility Matrix
+            commands::get_compatibility_matrix,
+            // Nexus Thumbnails
+            commands::fetch_mod_thumbnail,
+            // Nexus Search & Browse
+            commands::search_nexus_mods,
+            commands::get_nexus_mod_details,
+            // Community Profiles
+            commands::export_community_profile,
+            commands::import_community_profile,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

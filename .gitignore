@@ -27,5 +27,9 @@ npm-debug.log*
 __pycache__/
 *.pyc
 
+# Secrets
+.env
+nexus_api_key.txt
+
 # OS
 Thumbs.db

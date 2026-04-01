@@ -18,6 +18,7 @@ import {
   AlertTriangle,
   ClipboardCheck,
   Wrench,
+  Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ModCard } from "./ModCard";
@@ -51,6 +52,7 @@ interface ModListProps {
   updateStatuses?: Record<string, ModUpdateStatus>;
   mountedMods?: string[];
   onDeleteMod?: (fileName: string) => void;
+  thumbnails?: Record<string, string>;
 }
 
 export function ModList({
@@ -74,6 +76,7 @@ export function ModList({
   updateStatuses = {},
   mountedMods = [],
   onDeleteMod,
+  thumbnails = {},
 }: ModListProps) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<FilterMode>("all");
@@ -91,6 +94,16 @@ export function ModList({
   });
 
   const activeCount = mods.filter((m) => m.enabled).length;
+  const outdatedMods = Object.values(updateStatuses).filter((s) => s.is_outdated);
+  const outdatedCount = outdatedMods.length;
+
+  function handleUpdateAll() {
+    for (const status of outdatedMods) {
+      if (status.nexus_url) {
+        window.open(status.nexus_url, "_blank");
+      }
+    }
+  }
 
   function handleDragEnd(result: DropResult) {
     if (!result.destination) return;
@@ -117,6 +130,19 @@ export function ModList({
               <FolderPlus className="w-5 h-5" />
               Import
             </button>
+            {outdatedCount > 0 && (
+              <button
+                onClick={handleUpdateAll}
+                style={{ padding: "8px 16px", fontSize: "13px" }}
+                className="flex items-center gap-3 font-medium text-accent bg-accent/10 border border-accent/20 rounded-sm hover:bg-accent/20 transition-all relative"
+              >
+                <Download className="w-5 h-5" />
+                Update All
+                <span className="text-xs font-bold bg-danger text-white rounded-sm" style={{ padding: "1px 7px", minWidth: "20px", textAlign: "center" }}>
+                  {outdatedCount}
+                </span>
+              </button>
+            )}
             <button
               onClick={onRevert}
               style={{ padding: "8px 16px", fontSize: "13px" }}
@@ -263,6 +289,7 @@ export function ModList({
                               updateStatus={updateStatuses[mod.file_name]}
                               isMounted={mountedMods.includes(mod.file_name)}
                               onDelete={onDeleteMod}
+                              thumbnailPath={thumbnails[mod.file_name]}
                             />
                           </div>
                         )}
