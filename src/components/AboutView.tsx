@@ -77,10 +77,15 @@ const changelog = [
     changes: [
       "Full mod management with enable/disable toggles, drag-and-drop load ordering, and per-patch controls",
       "Multi-file PAZ overlay engine supporting ANY .pabgb game file",
-      "File replacement mod support — auto-detects and mounts manifest.json + files/ format mods",
+      "File replacement mods — auto-detects manifest.json, mod.json, and loose folder formats",
+      "PAZ replacement mods — pre-built .paz archives at any index (0.paz, 32.paz, etc.)",
       "DDS texture mod support via PATHC index with per-folder enable/disable",
-      "Per-language font replacement (.ttf) with LZ4 compression and full checksum chain",
-      "Cross-format conflict detection and compatibility matrix for JSON, browser, and texture mods",
+      "Audio mods (.wem) — Wwise audio replacement through the file overlay pipeline",
+      "Per-language font replacement (.ttf/.otf) with LZ4 compression and full checksum chain",
+      "Cross-format merge — JSON byte patches applied on top of file replacement bases automatically",
+      "Cross-format conflict detection and compatibility matrix across all mod types",
+      "Overlay deduplication — duplicate files resolved by load order, no broken PAMT entries",
+      "Script mod detection (.bat/.ps1) — flagged for manual execution",
       "Mod Packs — bundle mods into shareable .dmpack files with embedded data",
       "Backup Snapshots — save and restore named snapshots of your entire mod state",
       "Community Profiles — export and import mod checklists as lightweight .dmprofile files",
@@ -180,29 +185,49 @@ export function AboutView() {
                 Supported Mod Formats
               </h2>
               <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                <p className="text-sm text-text-secondary flex items-center gap-2">
-                  <span className="text-accent">&#8226;</span>
-                  JSON byte-patch mods (.json) — the standard Crimson Desert modding format
+                <p className="text-sm text-text-secondary flex items-start gap-2">
+                  <span className="text-accent mt-0.5 shrink-0">&#8226;</span>
+                  <span><strong className="text-text-primary">JSON byte-patch</strong> (.json) — hex patches at specific byte offsets in .pabgb game files</span>
                 </p>
-                <p className="text-sm text-text-secondary flex items-center gap-2">
-                  <span className="text-accent">&#8226;</span>
-                  File replacement mods (manifest.json + files/) — full PAZ file overrides
+                <p className="text-sm text-text-secondary flex items-start gap-2">
+                  <span className="text-accent mt-0.5 shrink-0">&#8226;</span>
+                  <span><strong className="text-text-primary">File replacement</strong> (manifest.json / mod.json + files/) — full file overrides organized by PAZ group</span>
                 </p>
-                <p className="text-sm text-text-secondary flex items-center gap-2">
-                  <span className="text-accent">&#8226;</span>
-                  DDS texture mods — folder-based texture replacements via PATHC
+                <p className="text-sm text-text-secondary flex items-start gap-2">
+                  <span className="text-accent mt-0.5 shrink-0">&#8226;</span>
+                  <span><strong className="text-text-primary">Loose folder</strong> — numbered group directories (0000–0036) auto-detected without any manifest</span>
                 </p>
-                <p className="text-sm text-text-secondary flex items-center gap-2">
-                  <span className="text-accent">&#8226;</span>
-                  Font mods (.ttf / .otf) — per-language font replacement
+                <p className="text-sm text-text-secondary flex items-start gap-2">
+                  <span className="text-accent mt-0.5 shrink-0">&#8226;</span>
+                  <span><strong className="text-text-primary">PAZ replacement</strong> — pre-built .paz archives at any index (0.paz, 1.paz, 32.paz, etc.)</span>
                 </p>
-                <p className="text-sm text-text-secondary flex items-center gap-2">
-                  <span className="text-accent">&#8226;</span>
-                  ASI / DLL plugins — native code mods with loader management
+                <p className="text-sm text-text-secondary flex items-start gap-2">
+                  <span className="text-accent mt-0.5 shrink-0">&#8226;</span>
+                  <span><strong className="text-text-primary">DDS textures</strong> — folder-based texture replacements registered in the PATHC index</span>
                 </p>
-                <p className="text-sm text-text-secondary flex items-center gap-2">
-                  <span className="text-accent">&#8226;</span>
-                  ReShade presets — post-processing shader management
+                <p className="text-sm text-text-secondary flex items-start gap-2">
+                  <span className="text-accent mt-0.5 shrink-0">&#8226;</span>
+                  <span><strong className="text-text-primary">Font mods</strong> (.ttf / .otf) — per-language game font replacement via PAZ overlay</span>
+                </p>
+                <p className="text-sm text-text-secondary flex items-start gap-2">
+                  <span className="text-accent mt-0.5 shrink-0">&#8226;</span>
+                  <span><strong className="text-text-primary">Audio mods</strong> (.wem) — Wwise audio file replacement through the overlay pipeline</span>
+                </p>
+                <p className="text-sm text-text-secondary flex items-start gap-2">
+                  <span className="text-accent mt-0.5 shrink-0">&#8226;</span>
+                  <span><strong className="text-text-primary">UI mods</strong> (.css / .xml / .html) — game interface modifications via file replacement</span>
+                </p>
+                <p className="text-sm text-text-secondary flex items-start gap-2">
+                  <span className="text-accent mt-0.5 shrink-0">&#8226;</span>
+                  <span><strong className="text-text-primary">ASI / DLL plugins</strong> — native code mods with ASI Loader auto-install</span>
+                </p>
+                <p className="text-sm text-text-secondary flex items-start gap-2">
+                  <span className="text-accent mt-0.5 shrink-0">&#8226;</span>
+                  <span><strong className="text-text-primary">ReShade presets</strong> — post-processing shader management with preset switching</span>
+                </p>
+                <p className="text-sm text-text-secondary flex items-start gap-2">
+                  <span className="text-accent mt-0.5 shrink-0">&#8226;</span>
+                  <span><strong className="text-text-primary">Script mods</strong> (.bat / .ps1) — detected and flagged for manual execution</span>
                 </p>
               </div>
             </div>
