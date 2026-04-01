@@ -18,13 +18,13 @@ import { ModPackView } from "@/components/ModPackView";
 import { SnapshotView } from "@/components/SnapshotView";
 import { ModCreatorView } from "@/components/ModCreatorView";
 import { CompatibilityView } from "@/components/CompatibilityView";
-import { NexusBrowseView } from "@/components/NexusBrowseView";
+
 import { CommunityView } from "@/components/CommunityView";
 import { PreflightDialog } from "@/components/PreflightDialog";
 import { CheckResultDialog } from "@/components/CheckResultDialog";
 import { LogPanel, type LogEntry } from "@/components/LogPanel";
 import { StatusBar } from "@/components/StatusBar";
-import type { AppConfig, ModEntry, ConflictInfo, ActiveMod, ApplyResult, LangModEntry, PapgtStatus, ModProfile, BackupInfo, GameVersion, PreflightResult, RecoverResult, DetailedCheckResult, ModChange, NexusIdMapping, ModUpdateStatus, NexusCacheEntry, AsiStatus, ReshadeStatus, ModPack, Snapshot, NewModData, NexusSearchResult, CommunityProfile } from "@/types";
+import type { AppConfig, ModEntry, ConflictInfo, ActiveMod, ApplyResult, LangModEntry, PapgtStatus, ModProfile, BackupInfo, GameVersion, PreflightResult, RecoverResult, DetailedCheckResult, ModChange, NexusIdMapping, ModUpdateStatus, NexusCacheEntry, AsiStatus, ReshadeStatus, ModPack, Snapshot, NewModData, CommunityProfile } from "@/types";
 
 interface PatchDetail {
   game_file: string;
@@ -664,21 +664,6 @@ export default function App() {
     }
   }
 
-  // --- Nexus Browse ---
-  async function searchNexusMods(query: string): Promise<NexusSearchResult[]> {
-    try {
-      const results = await invoke<NexusSearchResult[]>("search_nexus_mods", {
-        query,
-        apiKey: NEXUS_API_KEY,
-      });
-      addLog(`Nexus search: ${results.length} results for "${query}"`, "info");
-      return results;
-    } catch (e) {
-      addLog(`Nexus search failed: ${e}`, "error");
-      toast.error(`Search failed: ${e}`);
-      return [];
-    }
-  }
 
   // --- Community Profiles ---
   async function exportCommunityProfile(name: string, author: string, description: string) {
@@ -1619,9 +1604,7 @@ export default function App() {
                 onCreate={createModJson}
               />
             )}
-            {view === "nexusBrowse" && (
-              <NexusBrowseView onSearch={searchNexusMods} />
-            )}
+
             {view === "snapshots" && (
               <SnapshotView
                 snapshots={snapshots}

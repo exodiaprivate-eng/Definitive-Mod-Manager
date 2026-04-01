@@ -99,9 +99,7 @@ pub fn run() {
             commands::get_compatibility_matrix,
             // Nexus Thumbnails
             commands::fetch_mod_thumbnail,
-            // Nexus Search & Browse
-            commands::search_nexus_mods,
-            commands::get_nexus_mod_details,
+
             // Community Profiles
             commands::export_community_profile,
             commands::import_community_profile,

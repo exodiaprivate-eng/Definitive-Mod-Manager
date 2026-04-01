@@ -274,18 +274,6 @@ export interface NewChange {
   patched: string;
 }
 
-// Nexus Search & Browse
-export interface NexusSearchResult {
-  mod_id: number;
-  name: string;
-  summary: string;
-  author: string;
-  category: string;
-  endorsements: number;
-  downloads: number;
-  image_url: string;
-  url: string;
-}
 
 // Community Profiles
 export interface CommunityProfileMod {

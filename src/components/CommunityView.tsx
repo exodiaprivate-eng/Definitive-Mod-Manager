@@ -57,7 +57,7 @@ export function CommunityView({ onExport, onImport, importedProfile, installedFi
           <div>
             <h1 className="text-2xl font-bold text-text-primary">Community Profiles</h1>
             <p className="text-sm text-text-muted mt-2">
-              Share mod configurations with the community via .dmprofile files
+              Share your mod list as a lightweight .dmprofile file. Unlike Mod Packs, this is just a checklist of mod names and versions with Nexus links — recipients download the mods themselves.
             </p>
           </div>
           <div className="flex items-center gap-2">

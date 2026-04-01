@@ -54,7 +54,7 @@ export function ModPackView({ packs, onCreate, onImport, onLoad, onExport, onDel
           <div>
             <h1 className="text-2xl font-bold text-text-primary">Mod Packs</h1>
             <p className="text-sm text-text-muted mt-2">
-              Create and share bundled mod configurations
+              Bundle your active mods into a single .dmpack file with the mod data included. Recipients get everything they need in one file — no hunting for downloads.
             </p>
           </div>
           <div className="flex items-center gap-2">

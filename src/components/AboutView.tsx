@@ -65,7 +65,7 @@ const changelog = [
       "Compatibility Matrix — view pairwise compatibility between all installed mods",
       "Mod Creator — build new JSON byte-patch mods from scratch within the app",
       "Community Profiles — export and import full mod configurations for sharing",
-      "Nexus Browse — search and discover mods on Nexus Mods directly from the manager",
+
       "Manual Backup button — create backups on demand from the Backups tab",
       "Mod deletion — remove mod files directly from the mod list",
       "Nexus API key loaded from file — no hardcoded credentials",

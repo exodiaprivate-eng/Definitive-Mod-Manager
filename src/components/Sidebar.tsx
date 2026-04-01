@@ -15,11 +15,10 @@ import {
   Camera,
   Hammer,
   Grid3x3,
-  Search,
   Users,
 } from "lucide-react";
 
-export type View = "mods" | "conflicts" | "compatibility" | "language" | "asi" | "reshade" | "profiles" | "packs" | "community" | "creator" | "snapshots" | "backups" | "nexusBrowse" | "settings" | "about";
+export type View = "mods" | "conflicts" | "compatibility" | "language" | "asi" | "reshade" | "profiles" | "packs" | "community" | "creator" | "snapshots" | "backups" | "settings" | "about";
 
 interface SidebarProps {
   activeView: View;
@@ -166,12 +165,7 @@ export function Sidebar({ activeView, onViewChange, modCount, activeCount, confl
               active={activeView === "backups"}
               onClick={() => onViewChange("backups")}
             />
-            <NavItem
-              icon={<Search className="w-5 h-5" />}
-              label="Browse Nexus"
-              active={activeView === "nexusBrowse"}
-              onClick={() => onViewChange("nexusBrowse")}
-            />
+
             <NavItem
               icon={<Settings className="w-5 h-5" />}
               label="Settings"
