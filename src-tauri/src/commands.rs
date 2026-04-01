@@ -3296,176 +3296,34 @@ fn load_nexus_cache_internal(_mods_path: &str) -> Vec<NexusCacheEntry> {
     Vec::new()
 }
 
-/// Check for mod updates by querying the Nexus Mods API for each mapped mod.
+/// Check for mod updates — network calls removed for Nexus compliance.
+/// Returns empty results since online checking is disabled.
 #[tauri::command]
 pub fn check_mod_updates(
-    api_key: String,
-    mod_ids: Vec<NexusIdMapping>,
-    mods_path: String,
+    _api_key: String,
+    _mod_ids: Vec<NexusIdMapping>,
+    _mods_path: String,
 ) -> Result<Vec<ModUpdateStatus>, String> {
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("DefinitiveModManager/1.0.0")
-        .build()
-        .map_err(|e| format!("HTTP client error: {}", e))?;
-
-    let mut results = Vec::new();
-    for mapping in &mod_ids {
-        let url = format!(
-            "https://api.nexusmods.com/v1/games/crimsondesert/mods/{}.json",
-            mapping.nexus_mod_id
-        );
-        let local_version = {
-            let mod_path = Path::new(&mods_path).join(&mapping.file_name);
-            if let Ok(mod_file) = parse_mod_file(&mod_path) {
-                let (_, v, _, _) = get_mod_display_info(&mod_file);
-                v
-            } else {
-                "?".to_string()
-            }
-        };
-
-        match client.get(&url).header("apikey", &api_key).send() {
-            Ok(resp) => {
-                if resp.status().is_success() {
-                    if let Ok(data) = resp.json::<serde_json::Value>() {
-                        let nexus_version = data["version"].as_str().unwrap_or("?").to_string();
-                        let nexus_url = format!("https://www.nexusmods.com/crimsondesert/mods/{}", mapping.nexus_mod_id);
-                        let is_outdated = nexus_version != local_version && nexus_version != "?" && local_version != "?";
-                        results.push(ModUpdateStatus {
-                            file_name: mapping.file_name.clone(),
-                            nexus_mod_id: Some(mapping.nexus_mod_id),
-                            local_version,
-                            nexus_version: Some(nexus_version),
-                            is_outdated,
-                            nexus_url: Some(nexus_url),
-                            error: None,
-                        });
-                    }
-                } else {
-                    results.push(ModUpdateStatus {
-                        file_name: mapping.file_name.clone(),
-                        nexus_mod_id: Some(mapping.nexus_mod_id),
-                        local_version,
-                        nexus_version: None,
-                        is_outdated: false,
-                        nexus_url: None,
-                        error: Some(format!("API returned {}", resp.status())),
-                    });
-                }
-            }
-            Err(e) => {
-                results.push(ModUpdateStatus {
-                    file_name: mapping.file_name.clone(),
-                    nexus_mod_id: Some(mapping.nexus_mod_id),
-                    local_version,
-                    nexus_version: None,
-                    is_outdated: false,
-                    nexus_url: None,
-                    error: Some(format!("{}", e)),
-                });
-            }
-        }
-    }
-    Ok(results)
+    // Network calls removed — update checking disabled for Nexus Mods compliance
+    Ok(Vec::new())
 }
 
 #[tauri::command]
 pub fn search_nexus_by_name(
     _api_key: String,
-    mod_name: String,
-    mods_path: String,
+    _mod_name: String,
+    _mods_path: String,
 ) -> Result<Option<NexusCacheEntry>, String> {
-    let clean_name = mod_name
-        .replace(".json", "")
-        .replace('_', " ")
-        .replace('-', " ");
-
-    let url = format!(
-        "https://search.nexusmods.com/mods?terms={}&game_id=7640&blocked_tags=&blocked_authors=&include_adult=true",
-        urlencoding(&clean_name)
-    );
-
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("DefinitiveModManager/1.0.0")
-        .build()
-        .map_err(|e| format!("HTTP client error: {}", e))?;
-
-    let resp = client.get(&url).send()
-        .map_err(|e| format!("Search failed: {}", e))?;
-
-    if !resp.status().is_success() {
-        return Ok(None);
-    }
-
-    let data: serde_json::Value = resp.json()
-        .map_err(|e| format!("Parse error: {}", e))?;
-
-    let results = data["results"].as_array();
-    if let Some(results) = results {
-        let clean_lower = clean_name.to_lowercase();
-        for result in results {
-            let name = result["name"].as_str().unwrap_or("");
-            let mod_id = result["mod_id"].as_u64().unwrap_or(0);
-            if mod_id > 0 {
-                let entry = NexusCacheEntry {
-                    file_name: mod_name.clone(),
-                    nexus_mod_id: mod_id,
-                    nexus_name: name.to_string(),
-                    last_checked: chrono::Local::now().to_rfc3339(),
-                };
-                // Save to cache
-                let cache_path = Path::new(&mods_path).join("_nexus_cache.json");
-                let mut cache = load_nexus_cache_internal(&mods_path);
-                cache.retain(|e| e.file_name != mod_name);
-                cache.push(entry.clone());
-                let _ = fs::write(&cache_path, serde_json::to_string_pretty(&cache).unwrap_or_default());
-                return Ok(Some(entry));
-            }
-        }
-    }
     Ok(None)
-}
-
-fn urlencoding(s: &str) -> String {
-    s.chars().map(|c| match c {
-        'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
-        ' ' => "+".to_string(),
-        _ => format!("%{:02X}", c as u8),
-    }).collect()
 }
 
 #[tauri::command]
 pub fn search_all_unmatched_mods(
-    api_key: String,
-    mods_path: String,
-    known_mappings: Vec<NexusIdMapping>,
+    _api_key: String,
+    _mods_path: String,
+    _known_mappings: Vec<NexusIdMapping>,
 ) -> Result<Vec<NexusIdMapping>, String> {
-    let mods_dir = Path::new(&mods_path);
-    let known_files: Vec<&str> = known_mappings.iter().map(|m| m.file_name.as_str()).collect();
-    let mut new_mappings = Vec::new();
-
-    if let Ok(entries) = fs::read_dir(mods_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                continue;
-            }
-            let file_name = path.file_name().unwrap().to_string_lossy().to_string();
-            if known_files.contains(&file_name.as_str()) {
-                continue;
-            }
-            if let Ok(Some(cache_entry)) = search_nexus_by_name(api_key.clone(), file_name.clone(), mods_path.clone()) {
-                new_mappings.push(NexusIdMapping {
-                    file_name,
-                    nexus_mod_id: cache_entry.nexus_mod_id,
-                    folder_name: String::new(),
-                });
-            }
-            // Rate limit: 500ms between searches
-            std::thread::sleep(std::time::Duration::from_millis(500));
-        }
-    }
-    Ok(new_mappings)
+    Ok(Vec::new())
 }
 
 
@@ -4009,6 +3867,9 @@ pub fn open_asi_config(game_path: String, plugin_name: String) -> Result<(), Str
     Ok(())
 }
 
+/// Ultimate ASI Loader x64 DLL embedded at compile time (no network calls)
+const EMBEDDED_ASI_LOADER: &[u8] = include_bytes!("../asi_loader.dll");
+
 #[tauri::command]
 pub fn install_asi_loader(game_path: String) -> Result<String, String> {
     let bin64 = Path::new(&game_path).join("bin64");
@@ -4023,62 +3884,12 @@ pub fn install_asi_loader(game_path: String) -> Result<String, String> {
         }
     }
 
-    let url = "https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/download/v9.7.0/Ultimate-ASI-Loader_x64.zip";
-    let response = reqwest::blocking::Client::new()
-        .get(url)
-        .header("User-Agent", "DefinitiveModManager/1.0.0")
-        .send()
-        .map_err(|e| format!("Download failed: {}", e))?;
-
-    if !response.status().is_success() {
-        return Err(format!("Download failed with status: {}", response.status()));
-    }
-
-    let zip_bytes = response.bytes()
-        .map_err(|e| format!("Failed to read download: {}", e))?;
-
-    let cursor = std::io::Cursor::new(zip_bytes);
-    let mut archive = zip::ZipArchive::new(cursor)
-        .map_err(|e| format!("Failed to read zip: {}", e))?;
-
     let target_name = "version.dll";
-    let mut found_dll = false;
+    let dest = bin64.join(target_name);
+    fs::write(&dest, EMBEDDED_ASI_LOADER)
+        .map_err(|e| format!("Failed to write {}: {}", target_name, e))?;
 
-    for i in 0..archive.len() {
-        let mut file = archive.by_index(i)
-            .map_err(|e| format!("Zip entry error: {}", e))?;
-        let name = file.name().to_lowercase();
-        if name.ends_with(".dll") && !name.contains('/') {
-            let dest = bin64.join(target_name);
-            let mut content = Vec::new();
-            std::io::Read::read_to_end(&mut file, &mut content)
-                .map_err(|e| format!("Failed to extract: {}", e))?;
-            fs::write(&dest, &content)
-                .map_err(|e| format!("Failed to write {}: {}", target_name, e))?;
-            found_dll = true;
-            break;
-        }
-    }
-
-    for i in 0..archive.len() {
-        let mut file = archive.by_index(i)
-            .map_err(|e| format!("Zip entry error: {}", e))?;
-        let name = file.name().to_string();
-        if name.to_lowercase().ends_with(".ini") && !name.contains('/') {
-            let dest = bin64.join(&name);
-            let mut content = Vec::new();
-            std::io::Read::read_to_end(&mut file, &mut content)
-                .map_err(|e| format!("Failed to extract: {}", e))?;
-            fs::write(&dest, &content)
-                .map_err(|e| format!("Failed to write {}: {}", name, e))?;
-        }
-    }
-
-    if found_dll {
-        Ok(format!("ASI Loader installed as {} in bin64/", target_name))
-    } else {
-        Err("No DLL found in the downloaded archive".to_string())
-    }
+    Ok(format!("ASI Loader installed as {} in bin64/", target_name))
 }
 
 // =============================================================================
@@ -4636,62 +4447,14 @@ pub fn get_compatibility_matrix(mods_path: String) -> Result<Vec<CompatEntry>, S
 // =============================================================================
 
 #[tauri::command]
-pub fn fetch_mod_thumbnail(nexus_mod_id: u64, api_key: String, cache_dir: String) -> Result<String, String> {
+pub fn fetch_mod_thumbnail(_nexus_mod_id: u64, _api_key: String, cache_dir: String) -> Result<String, String> {
+    // Return cached thumbnail if it exists, but don't fetch new ones (no network calls)
     let thumbs_dir = Path::new(&cache_dir).join("thumbs");
-    let cached_path = thumbs_dir.join(format!("{}.jpg", nexus_mod_id));
-
-    // Return cached file immediately if it exists
+    let cached_path = thumbs_dir.join(format!("{}.jpg", _nexus_mod_id));
     if cached_path.exists() {
         return Ok(cached_path.to_string_lossy().to_string());
     }
-
-    // Ensure thumbs directory exists
-    fs::create_dir_all(&thumbs_dir)
-        .map_err(|e| format!("Failed to create thumbs directory: {}", e))?;
-
-    // Query Nexus API for mod info
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("DefinitiveModManager/1.0.0")
-        .build()
-        .map_err(|e| format!("HTTP client error: {}", e))?;
-
-    let url = format!(
-        "https://api.nexusmods.com/v1/games/crimsondesert/mods/{}.json",
-        nexus_mod_id
-    );
-
-    let resp = client.get(&url)
-        .header("apikey", &api_key)
-        .send()
-        .map_err(|e| format!("API request failed: {}", e))?;
-
-    if !resp.status().is_success() {
-        return Err(format!("Nexus API returned {}", resp.status()));
-    }
-
-    let data: serde_json::Value = resp.json()
-        .map_err(|e| format!("Failed to parse API response: {}", e))?;
-
-    let picture_url = data["picture_url"]
-        .as_str()
-        .ok_or_else(|| "No picture_url in mod info".to_string())?;
-
-    // Download the thumbnail image
-    let img_resp = client.get(picture_url)
-        .send()
-        .map_err(|e| format!("Failed to download thumbnail: {}", e))?;
-
-    if !img_resp.status().is_success() {
-        return Err(format!("Image download returned {}", img_resp.status()));
-    }
-
-    let bytes = img_resp.bytes()
-        .map_err(|e| format!("Failed to read image bytes: {}", e))?;
-
-    fs::write(&cached_path, &bytes)
-        .map_err(|e| format!("Failed to save thumbnail: {}", e))?;
-
-    Ok(cached_path.to_string_lossy().to_string())
+    Err("Thumbnail fetching disabled (offline mode)".to_string())
 }
 
 
