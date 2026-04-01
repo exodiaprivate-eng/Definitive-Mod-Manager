@@ -20,14 +20,14 @@ export function ConflictView({ conflicts }: ConflictViewProps) {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="shrink-0 p-4">
-        <h1 className="text-lg font-bold text-text-primary">Mod Conflicts</h1>
-        <p className="text-xs text-text-muted mt-0.5">
-          {conflicts.length} conflict{conflicts.length !== 1 ? "s" : ""} detected between active mods
+      <div className="shrink-0 px-8 pt-7 pb-5">
+        <h1 className="text-2xl font-bold text-text-primary">Mod Conflicts</h1>
+        <p className="text-sm text-text-muted mt-2">
+          <span className="text-danger font-semibold">{conflicts.length}</span> conflict{conflicts.length !== 1 ? "s" : ""} detected between active mods
         </p>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-3">
+      <div className="flex-1 overflow-y-auto px-8 pb-6 space-y-3">
         {conflicts.map((conflict, i) => (
           <div
             key={`${conflict.game_file}-${conflict.offset}-${i}`}

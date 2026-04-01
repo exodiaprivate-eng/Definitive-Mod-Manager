@@ -108,6 +108,7 @@ export function Sidebar({ activeView, onViewChange, modCount, activeCount, confl
               active={activeView === "language"}
               onClick={() => onViewChange("language")}
             />
+
             <NavItem
               icon={<Plug className="w-5 h-5" />}
               label="ASI Mods"

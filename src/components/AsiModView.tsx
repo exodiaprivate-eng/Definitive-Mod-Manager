@@ -1,6 +1,6 @@
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
-import { Plug, Settings2, Trash2, Download, AlertTriangle, Check } from "lucide-react";
+import { Plug, Settings2, Trash2, Download, AlertTriangle, Check, RefreshCw } from "lucide-react";
 import type { AsiStatus } from "@/types";
 
 interface AsiModViewProps {
@@ -31,29 +31,31 @@ export function AsiModView({
 
   return (
     <div className="h-full flex flex-col">
-      <div className="shrink-0 p-4">
-        <div className="flex items-center justify-between">
+      <div className="shrink-0 px-8 pt-7 pb-5">
+        <div className="flex items-start justify-between">
           <div>
-            <h1 className="text-lg font-bold text-text-primary">ASI / DLL Mods</h1>
-            <p className="text-xs text-text-muted mt-0.5">
-              Native plugin mods loaded by ASI Loader &middot;{" "}
+            <h1 className="text-2xl font-bold text-text-primary">ASI / DLL Mods</h1>
+            <p className="text-sm text-text-muted mt-2">
               {plugins.length > 0
-                ? `${enabledCount} active / ${plugins.length} total`
+                ? <><span className="text-text-secondary font-semibold">{enabledCount}</span> active of {plugins.length} plugin{plugins.length !== 1 ? "s" : ""} detected</>
                 : "No plugins detected"}
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             <button
               onClick={onRefresh}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-text-secondary bg-surface border border-border rounded-sm hover:bg-surface-hover hover:border-border-hover transition-all"
+              style={{ padding: "8px 16px", fontSize: "13px" }}
+              className="flex items-center gap-2 font-medium text-text-secondary bg-white/[0.03] border border-border/60 rounded-sm hover:bg-white/[0.06] hover:border-border-hover transition-all"
             >
+              <RefreshCw className="w-4 h-4" />
               Refresh
             </button>
             <button
               onClick={onInstall}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-text-secondary bg-surface border border-border rounded-sm hover:bg-surface-hover hover:border-border-hover transition-all"
+              style={{ padding: "8px 16px", fontSize: "13px" }}
+              className="flex items-center gap-2 font-medium text-text-secondary bg-white/[0.03] border border-border/60 rounded-sm hover:bg-white/[0.06] hover:border-border-hover transition-all"
             >
-              <Download className="w-3.5 h-3.5" />
+              <Download className="w-4 h-4" />
               Install ASI Mod
             </button>
           </div>
@@ -61,7 +63,7 @@ export function AsiModView({
       </div>
 
       {/* ASI Loader status banner */}
-      <div style={{ padding: "0 16px 12px 16px" }}>
+      <div style={{ padding: "0 32px 12px 32px" }}>
         {asiStatus ? (
           asiStatus.has_loader ? (
             <div className="flex items-center gap-2 px-3 py-2 rounded-sm bg-success/10 border border-success/20">
@@ -104,7 +106,7 @@ export function AsiModView({
       </div>
 
       {/* Plugin list */}
-      <div className="flex-1 overflow-y-auto px-4 pb-4">
+      <div className="flex-1 overflow-y-auto px-8 pb-6">
         {plugins.length > 0 ? (
           <div className="space-y-2">
             {plugins.map((plugin) => (

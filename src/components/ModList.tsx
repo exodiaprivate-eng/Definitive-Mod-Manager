@@ -19,10 +19,12 @@ import {
   ClipboardCheck,
   Wrench,
   Download,
+  Image,
+  Check,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ModCard } from "./ModCard";
-import type { ModEntry, ModChange, ModUpdateStatus } from "@/types";
+import type { ModEntry, ModChange, ModUpdateStatus, TextureModEntry } from "@/types";
 
 interface PatchDetail {
   game_file: string;
@@ -53,6 +55,9 @@ interface ModListProps {
   mountedMods?: string[];
   onDeleteMod?: (fileName: string) => void;
   thumbnails?: Record<string, string>;
+  textureMods?: TextureModEntry[];
+  activeTextures?: string[];
+  onToggleTexture?: (folderName: string) => void;
 }
 
 export function ModList({
@@ -77,6 +82,9 @@ export function ModList({
   mountedMods = [],
   onDeleteMod,
   thumbnails = {},
+  textureMods = [],
+  activeTextures = [],
+  onToggleTexture,
 }: ModListProps) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<FilterMode>("all");
@@ -301,6 +309,66 @@ export function ModList({
               )}
             </Droppable>
           </DragDropContext>
+        )}
+
+        {/* Texture Mods */}
+        {textureMods.length > 0 && (
+          <div style={{ marginTop: "24px" }}>
+            <p className="text-xs font-bold uppercase tracking-[0.15em] text-text-muted/60 mb-4 flex items-center gap-2">
+              <Image className="w-4 h-4" />
+              Texture Mods ({textureMods.length})
+            </p>
+            <div className="space-y-3">
+              {textureMods.map((mod) => {
+                const enabled = activeTextures.includes(mod.folder_name);
+                return (
+                  <div
+                    key={mod.folder_name}
+                    className={cn(
+                      "group rounded-sm border relative overflow-hidden transition-all cursor-pointer",
+                      enabled
+                        ? "bg-accent/[0.03] border-accent/30 hover:border-accent/50"
+                        : "bg-surface/80 border-border/60 hover:border-border-hover"
+                    )}
+                    onClick={() => onToggleTexture?.(mod.folder_name)}
+                  >
+                    <div className={cn(
+                      "absolute left-0 top-0 bottom-0 w-1 transition-all duration-300",
+                      enabled ? "bg-accent/70" : "bg-border/30 group-hover:bg-accent/50"
+                    )} />
+
+                    <div className="flex items-center gap-5 pl-6 pr-5 py-5">
+                      <div
+                        className={cn(
+                          "w-5 h-5 rounded-sm border flex items-center justify-center shrink-0 transition-all",
+                          enabled ? "bg-accent border-accent" : "border-border/60 bg-transparent"
+                        )}
+                      >
+                        {enabled && <Check className="w-3.5 h-3.5 text-white" />}
+                      </div>
+
+                      <div className="w-8 h-8 rounded-sm flex items-center justify-center bg-white/[0.03] border border-border/40 shrink-0">
+                        <Image className={cn("w-4 h-4", enabled ? "text-accent" : "text-text-muted")} />
+                      </div>
+
+                      <div className="flex-1 min-w-0">
+                        <h3 className={cn("text-base font-semibold truncate", enabled ? "text-text-primary" : "text-text-secondary")}>
+                          {mod.name}
+                        </h3>
+                        <p className="text-sm text-text-muted mt-1">
+                          <span className={cn("font-semibold", enabled ? "text-accent" : "text-text-secondary")}>{mod.dds_count}</span> DDS texture{mod.dds_count !== 1 ? "s" : ""}
+                        </p>
+                      </div>
+
+                      <span className="text-[11px] font-mono bg-white/[0.03] text-text-muted px-2.5 py-1 rounded-sm border border-border/30">
+                        texture
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         )}
       </div>
     </div>

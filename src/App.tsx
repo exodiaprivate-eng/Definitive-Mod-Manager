@@ -19,12 +19,13 @@ import { SnapshotView } from "@/components/SnapshotView";
 import { ModCreatorView } from "@/components/ModCreatorView";
 import { CompatibilityView } from "@/components/CompatibilityView";
 
+
 import { CommunityView } from "@/components/CommunityView";
 import { PreflightDialog } from "@/components/PreflightDialog";
 import { CheckResultDialog } from "@/components/CheckResultDialog";
 import { LogPanel, type LogEntry } from "@/components/LogPanel";
 import { StatusBar } from "@/components/StatusBar";
-import type { AppConfig, ModEntry, ConflictInfo, ActiveMod, ApplyResult, LangModEntry, PapgtStatus, ModProfile, BackupInfo, GameVersion, PreflightResult, RecoverResult, DetailedCheckResult, ModChange, NexusIdMapping, ModUpdateStatus, NexusCacheEntry, AsiStatus, ReshadeStatus, ModPack, Snapshot, NewModData, CommunityProfile } from "@/types";
+import type { AppConfig, ModEntry, ConflictInfo, ActiveMod, ApplyResult, LangModEntry, PapgtStatus, ModProfile, BackupInfo, GameVersion, PreflightResult, RecoverResult, DetailedCheckResult, ModChange, NexusIdMapping, ModUpdateStatus, NexusCacheEntry, AsiStatus, ReshadeStatus, ModPack, Snapshot, NewModData, CommunityProfile, TextureModEntry, TextureApplyResult } from "@/types";
 
 interface PatchDetail {
   game_file: string;
@@ -77,6 +78,8 @@ export default function App() {
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [thumbnails, setThumbnails] = useState<Record<string, string>>({});
   const [importedProfile, setImportedProfile] = useState<CommunityProfile | null>(null);
+  const [textureMods, setTextureMods] = useState<TextureModEntry[]>([]);
+  const [activeTextures, setActiveTextures] = useState<string[]>([]);
 
   const addLog = useCallback((message: string, level: LogEntry["level"] = "info") => {
     const now = new Date();
@@ -234,6 +237,7 @@ export default function App() {
     if (!config.modsPath) return;
     scanMods();
     scanLangMods();
+    scanTextureMods();
     loadProfiles();
     loadBackups();
     loadModPacks();
@@ -395,6 +399,30 @@ export default function App() {
     } catch (e) {
       console.error("Failed to scan lang mods:", e);
     }
+  }
+
+  async function scanTextureMods() {
+    try {
+      const entries = await invoke<TextureModEntry[]>("scan_texture_mods", {
+        modsPath: config.modsPath,
+      });
+      setTextureMods(entries);
+      if (entries.length > 0) {
+        const totalDds = entries.reduce((sum, e) => sum + e.dds_count, 0);
+        addLog(`Texture scan: ${entries.length} folder(s), ${totalDds} DDS file(s)`, "info");
+      }
+    } catch (e) {
+      setTextureMods([]);
+      addLog(`Texture scan failed: ${e}`, "error");
+    }
+  }
+
+  function toggleTextureMod(folderName: string) {
+    setActiveTextures((prev) =>
+      prev.includes(folderName)
+        ? prev.filter((f) => f !== folderName)
+        : [...prev, folderName]
+    );
   }
 
   function getAppBaseDir(): string {
@@ -1212,6 +1240,24 @@ export default function App() {
         result.errors.forEach((err) => addLog(`  Error: ${err}`, "error"));
       }
 
+      // Apply texture mods if any are enabled
+      if (activeTextures.length > 0) {
+        try {
+          const texResult = await invoke<TextureApplyResult>("apply_texture_mods", {
+            gamePath: config.gamePath,
+            backupDir,
+            textureFolders: activeTextures,
+            modsPath: config.modsPath,
+          });
+          if (texResult.textures_applied > 0) {
+            addLog(`Texture mods: ${texResult.textures_applied} DDS texture(s) registered in PATHC`, "success");
+          }
+          texResult.errors.forEach((err) => addLog(`  Texture error: ${err}`, "error"));
+        } catch (e) {
+          addLog(`Texture mod apply failed: ${e}`, "error");
+        }
+      }
+
       // Refresh status after mount
       loadBackups();
       scanPapgt();
@@ -1235,6 +1281,18 @@ export default function App() {
       addLog(`Unmount successful: ${restored.length} file(s) restored`, "success");
       restored.forEach((file) => addLog(`  Restored: ${file}`, "success"));
       setMountedMods([]);
+
+      // Revert texture mods (restore clean PATHC)
+      try {
+        const texMsg = await invoke<string>("revert_texture_mods", {
+          gamePath: config.gamePath,
+          backupDir,
+        });
+        addLog(texMsg, "success");
+      } catch {
+        // No PATHC backup — texture mods were never applied, skip silently
+      }
+
       scanPapgt();
     } catch (e) {
       toast.error(`Failed to unmount: ${e}`);
@@ -1486,6 +1544,7 @@ export default function App() {
           activeCount={activeCount}
           conflictCount={conflicts.length}
           asiCount={asiStatus?.plugins.length}
+
           onOpenModsFolder={() => {
             if (config.modsPath) {
               invoke("open_folder", { folderPath: config.modsPath }).catch(() => {});
@@ -1523,6 +1582,9 @@ export default function App() {
                 mountedMods={mountedMods}
                 onDeleteMod={deleteMod}
                 thumbnails={thumbnails}
+                textureMods={textureMods}
+                activeTextures={activeTextures}
+                onToggleTexture={toggleTextureMod}
               />
             )}
             {view === "conflicts" && <ConflictView conflicts={conflicts} />}

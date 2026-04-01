@@ -18,25 +18,26 @@ export function LanguageView({
 }: LanguageViewProps) {
   return (
     <div className="h-full flex flex-col">
-      <div className="shrink-0 p-4">
-        <div className="flex items-center justify-between">
+      <div className="shrink-0 px-8 pt-7 pb-5">
+        <div className="flex items-start justify-between">
           <div>
-            <h1 className="text-lg font-bold text-text-primary">Language Mods</h1>
-            <p className="text-xs text-text-muted mt-0.5">
-              Translation and localization patches &middot; Current: {selectedLanguage}
+            <h1 className="text-2xl font-bold text-text-primary">Language Mods</h1>
+            <p className="text-sm text-text-muted mt-2">
+              Translation and localization patches — Current: <span className="text-text-secondary font-semibold">{selectedLanguage}</span>
             </p>
           </div>
           <button
             onClick={onImportLang}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-text-secondary bg-surface border border-border rounded-[var(--radius-md)] hover:bg-surface-hover hover:border-border-hover transition-all"
+            style={{ padding: "8px 16px", fontSize: "13px" }}
+            className="flex items-center gap-2 font-medium text-text-secondary bg-white/[0.03] border border-border/60 rounded-sm hover:bg-white/[0.06] hover:border-border-hover transition-all"
           >
-            <FolderPlus className="w-3.5 h-3.5" />
+            <FolderPlus className="w-4 h-4" />
             Import Language Mod
           </button>
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-4 pb-4">
+      <div className="flex-1 overflow-y-auto px-8 pb-6">
         {/* Default (no language mod) */}
         <div className="space-y-2">
           <motion.button

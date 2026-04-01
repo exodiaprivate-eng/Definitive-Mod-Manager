@@ -84,33 +84,40 @@ export function CommunityView({ onExport, onImport, importedProfile, installedFi
         </div>
 
         {showExport && (
-          <div className="border border-border/40 bg-white/[0.02] rounded-sm" style={{ padding: "16px" }}>
+          <div className="rounded-sm border border-border/50 bg-surface/80 overflow-hidden" style={{ padding: "20px" }}>
             <div className="space-y-3">
               <div className="flex gap-3">
+                <div className="flex items-center flex-1 bg-white/[0.02] border border-border/50 rounded-sm focus-within:border-accent/40 focus-within:bg-white/[0.04] focus-within:shadow-[0_0_0_3px_rgba(99,102,241,0.08)] transition-all" style={{ height: "40px", paddingLeft: "14px", gap: "10px" }}>
+                  <Users className="w-4 h-4 text-text-muted/50 shrink-0" />
+                  <input
+                    type="text"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    placeholder="Profile name..."
+                    className="flex-1 h-full bg-transparent text-sm text-text-primary placeholder:text-text-muted/50 focus:outline-none"
+                    autoFocus
+                  />
+                </div>
+                <div className="flex items-center w-48 bg-white/[0.02] border border-border/50 rounded-sm focus-within:border-accent/40 focus-within:bg-white/[0.04] focus-within:shadow-[0_0_0_3px_rgba(99,102,241,0.08)] transition-all" style={{ height: "40px", paddingLeft: "14px", gap: "10px" }}>
+                  <input
+                    type="text"
+                    value={author}
+                    onChange={(e) => setAuthor(e.target.value)}
+                    placeholder="Author..."
+                    className="flex-1 h-full bg-transparent text-sm text-text-primary placeholder:text-text-muted/50 focus:outline-none"
+                  />
+                </div>
+              </div>
+              <div className="flex items-center bg-white/[0.02] border border-border/50 rounded-sm focus-within:border-accent/40 focus-within:bg-white/[0.04] focus-within:shadow-[0_0_0_3px_rgba(99,102,241,0.08)] transition-all" style={{ height: "40px", paddingLeft: "14px", gap: "10px" }}>
                 <input
                   type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder="Profile name"
-                  className="flex-1 px-3 py-2 text-sm bg-white/[0.03] border border-border/50 rounded-sm text-text-primary placeholder:text-text-muted/50 focus:outline-none focus:border-accent/60 transition-colors"
-                  autoFocus
-                />
-                <input
-                  type="text"
-                  value={author}
-                  onChange={(e) => setAuthor(e.target.value)}
-                  placeholder="Author"
-                  className="w-40 px-3 py-2 text-sm bg-white/[0.03] border border-border/50 rounded-sm text-text-primary placeholder:text-text-muted/50 focus:outline-none focus:border-accent/60 transition-colors"
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="Description (optional)..."
+                  className="flex-1 h-full bg-transparent text-sm text-text-primary placeholder:text-text-muted/50 focus:outline-none"
                 />
               </div>
-              <textarea
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder="Description (optional)"
-                rows={2}
-                className="w-full px-3 py-2 text-sm bg-white/[0.03] border border-border/50 rounded-sm text-text-primary placeholder:text-text-muted/50 focus:outline-none focus:border-accent/60 transition-colors resize-none"
-              />
               <div className="flex justify-end gap-2">
                 <button
                   onClick={() => setShowExport(false)}
@@ -121,7 +128,12 @@ export function CommunityView({ onExport, onImport, importedProfile, installedFi
                 <button
                   onClick={handleExport}
                   disabled={!name.trim()}
-                  className="flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-sm bg-gradient-to-r from-accent to-indigo-500 text-white hover:brightness-110 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  className={cn(
+                    "flex items-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-sm transition-all",
+                    name.trim()
+                      ? "bg-gradient-to-r from-accent to-indigo-500 text-white shadow-[0_0_20px_rgba(99,102,241,0.35)] hover:shadow-[0_0_30px_rgba(99,102,241,0.5)] hover:brightness-110"
+                      : "bg-white/[0.03] text-text-muted cursor-not-allowed border border-border/30"
+                  )}
                 >
                   <Upload className="w-4 h-4" />
                   Export

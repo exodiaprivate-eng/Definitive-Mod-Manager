@@ -22,32 +22,34 @@ export function ReshadeView({
 
   return (
     <div className="h-full flex flex-col">
-      <div className="shrink-0 p-4">
-        <div className="flex items-center justify-between">
+      <div className="shrink-0 px-8 pt-7 pb-5">
+        <div className="flex items-start justify-between">
           <div>
-            <h1 className="text-lg font-bold text-text-primary">ReShade</h1>
-            <p className="text-xs text-text-muted mt-0.5">
-              Post-processing shader injector &middot;{" "}
+            <h1 className="text-2xl font-bold text-text-primary">ReShade</h1>
+            <p className="text-sm text-text-muted mt-2">
+              Post-processing shader injector —{" "}
               {reshadeStatus?.installed
                 ? reshadeStatus.enabled
-                  ? "Active"
-                  : "Disabled"
+                  ? <span className="text-success font-semibold">Active</span>
+                  : <span className="text-warning font-semibold">Disabled</span>
                 : "Not detected"}
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             <button
               onClick={onRefresh}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-text-secondary bg-surface border border-border rounded-sm hover:bg-surface-hover hover:border-border-hover transition-all"
+              style={{ padding: "8px 16px", fontSize: "13px" }}
+              className="flex items-center gap-2 font-medium text-text-secondary bg-white/[0.03] border border-border/60 rounded-sm hover:bg-white/[0.06] hover:border-border-hover transition-all"
             >
               Refresh
             </button>
             {reshadeStatus?.installed && reshadeStatus.has_config && (
               <button
                 onClick={onOpenConfig}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-text-secondary bg-surface border border-border rounded-sm hover:bg-surface-hover hover:border-border-hover transition-all"
+                style={{ padding: "8px 16px", fontSize: "13px" }}
+                className="flex items-center gap-2 font-medium text-text-secondary bg-white/[0.03] border border-border/60 rounded-sm hover:bg-white/[0.06] hover:border-border-hover transition-all"
               >
-                <Settings2 className="w-3.5 h-3.5" />
+                <Settings2 className="w-4 h-4" />
                 Open Config
               </button>
             )}
@@ -56,7 +58,7 @@ export function ReshadeView({
       </div>
 
       {/* Status banner */}
-      <div style={{ padding: "0 16px 12px 16px" }}>
+      <div style={{ padding: "0 32px 12px 32px" }}>
         {reshadeStatus ? (
           reshadeStatus.installed ? (
             <div
@@ -102,7 +104,7 @@ export function ReshadeView({
       </div>
 
       {/* Main content */}
-      <div className="flex-1 overflow-y-auto px-4 pb-4">
+      <div className="flex-1 overflow-y-auto px-8 pb-6">
         {reshadeStatus?.installed ? (
           <div className="space-y-4">
             {/* Toggle card */}
