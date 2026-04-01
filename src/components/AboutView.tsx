@@ -24,6 +24,13 @@ import {
   FolderOpen,
   Download,
   Heart,
+  Image,
+  Type,
+  Puzzle,
+  Camera,
+  Grid3x3,
+  Users,
+  Hammer,
 } from "lucide-react";
 
 const features = [
@@ -31,14 +38,22 @@ const features = [
   { icon: Rocket, label: "Mount / Unmount", desc: "One-click mounting with automatic backup — always patches from clean vanilla" },
   { icon: Package, label: "Multi-File Patching", desc: "Supports mods targeting ANY .pabgb game file (storeinfo, inventory, recipes, etc.)" },
   { icon: Layers, label: "PAZ Overlay System", desc: "Reverse-engineered Pearl Abyss archive format — builds game-compatible overlays" },
-  { icon: AlertTriangle, label: "Conflict Detection", desc: "Warns when multiple mods patch the same byte offset" },
+  { icon: Puzzle, label: "File Replacement Mods", desc: "Auto-detects and mounts manifest.json + files/ mods — full PAZ file replacement alongside JSON patches" },
+  { icon: Image, label: "Texture Mods", desc: "DDS texture replacement support via PATHC index with automatic backup and restore" },
+  { icon: Type, label: "Font Replacement", desc: "Replace per-language game fonts (.ttf) with custom fonts via PAZ overlay" },
+  { icon: AlertTriangle, label: "Conflict Detection", desc: "Warns when multiple mods patch the same offset or replace the same file — works across all mod types" },
+  { icon: Grid3x3, label: "Compatibility Matrix", desc: "Visual grid showing pairwise compatibility between all installed mods" },
   { icon: Bookmark, label: "Mod Profiles", desc: "Save and load named mod configurations for instant switching" },
   { icon: FileCode2, label: "Per-Patch Toggles", desc: "Enable or disable individual patches within a mod" },
   { icon: Shield, label: "Pre-flight Checks", desc: "Validates game files, offsets, and conflicts before mounting" },
   { icon: ClipboardCheck, label: "Detailed Diagnostics", desc: "Full pre-mount check with version mismatch and stale backup detection" },
   { icon: Wrench, label: "Interrupted Mount Recovery", desc: "Detects and recovers from interrupted mount operations" },
-  { icon: Archive, label: "Backup Manager", desc: "View, restore individual, or delete game file backups" },
-  { icon: Globe, label: "Language Mods", desc: "Dedicated section for translation and localization patches" },
+  { icon: Archive, label: "Backup Manager", desc: "View, restore individual, or delete game file backups with manual backup button" },
+  { icon: Camera, label: "Backup Snapshots", desc: "Save and restore named snapshots of your entire mod state" },
+  { icon: Globe, label: "Language & Fonts", desc: "Dedicated section for translation patches and per-language font replacement" },
+  { icon: Package, label: "Mod Packs", desc: "Bundle multiple mods into shareable .dmpack files with embedded mod data" },
+  { icon: Users, label: "Community Profiles", desc: "Export and import lightweight mod checklists as .dmprofile files" },
+  { icon: Hammer, label: "Mod Creator", desc: "Build new JSON byte-patch mods from scratch within the app" },
   { icon: Eye, label: "Game Version Tracking", desc: "Detects game updates and warns about mod compatibility" },
   { icon: Layers, label: "PAPGT Overlay Monitoring", desc: "Real-time monitoring of the patch group table overlay status" },
   { icon: Play, label: "Launch Game", desc: "Start Crimson Desert directly from the manager" },
@@ -56,60 +71,38 @@ const features = [
 
 const changelog = [
   {
-    version: "1.0.2",
-    date: "April 2026",
-    title: "Feature Expansion Update",
-    changes: [
-      "Mod Packs — bundle multiple mods into shareable packs with embedded mod data",
-      "Backup Snapshots — save and restore named snapshots of your entire mod state",
-      "Compatibility Matrix — view pairwise compatibility between all installed mods",
-      "Mod Creator — build new JSON byte-patch mods from scratch within the app",
-      "Community Profiles — export and import full mod configurations for sharing",
-
-      "Manual Backup button — create backups on demand from the Backups tab",
-      "Mod deletion — remove mod files directly from the mod list",
-      "Nexus API key loaded from file — no hardcoded credentials",
-      "Fixed profile save/load crash caused by serialization mismatch",
-      "Fixed drag-and-drop overlay getting stuck on cancel",
-      "ASI Loader download URL updated to latest release",
-    ],
-  },
-  {
     version: "1.0.0",
-    date: "March 2026",
+    date: "April 2026",
     title: "Initial Release",
     changes: [
-      "Full mod management with enable/disable toggles and drag-and-drop load ordering",
-      "Multi-file PAZ overlay engine — supports ANY .pabgb game file (storeinfo, inventory, recipes, etc.)",
-      "Reverse-engineered Pearl Abyss PAZ/PAMT/PAPGT archive format with correct hashlittle checksums",
+      "Full mod management with enable/disable toggles, drag-and-drop load ordering, and per-patch controls",
+      "Multi-file PAZ overlay engine supporting ANY .pabgb game file",
+      "File replacement mod support — auto-detects and mounts manifest.json + files/ format mods",
+      "DDS texture mod support via PATHC index with per-folder enable/disable",
+      "Per-language font replacement (.ttf) with LZ4 compression and full checksum chain",
+      "Cross-format conflict detection and compatibility matrix for JSON, browser, and texture mods",
+      "Mod Packs — bundle mods into shareable .dmpack files with embedded data",
+      "Backup Snapshots — save and restore named snapshots of your entire mod state",
+      "Community Profiles — export and import mod checklists as lightweight .dmprofile files",
+      "Mod Creator — build JSON byte-patch mods from scratch within the app",
+      "Reverse-engineered PAZ/PAMT/PAPGT archive format with correct hashlittle checksums",
       "LZ4 compression pipeline — extracts from base archives, patches, recompresses, builds overlay",
-      "Automatic PAMT generation with multi-file directory tree, filename blocks, and hash entries",
-      "PAPGT builder with correct integrity hashes (Bob Jenkins hashlittle, init=0xC5EDE)",
-      "Automatic Steam game directory detection across C:, D:, E: drives",
-      "First-startup initialization — creates mods/backups folders, backs up vanilla game files",
-      "Automatic extraction of clean game data from PAZ archives on first mount",
-      "Conflict detection — warns when two mods modify the same byte offset",
-      "Pre-flight validation — checks game files, offset bounds, and conflicts before mount",
-      "Detailed diagnostics — version mismatch detection, stale backup warnings, full status report",
-      "Interrupted mount recovery — detects and fixes broken state from interrupted operations",
-      "Mod profiles — save, load, and delete named mod configurations for instant switching",
-      "Per-patch toggles — enable or disable individual patches within a mod",
-      "Mount status badges — each mod card shows if it's currently mounted in the game",
-      "Backup manager — view all backups, restore individual files, or bulk restore",
-      "Language mod support — dedicated section for translation patches",
-      "Game version tracking — reads paver file and warns when game updates may break mods",
-      "PAPGT overlay monitoring — real-time status bar showing overlay group state",
-      "Launch game directly from the manager",
-      "Nexus Mods integration — checks installed mods for available updates via API",
-      "Nexus name search — finds mod IDs by searching mod names with local result caching",
-      "Multi-format import — JSON files, ZIP archives, and Nexus download folder detection",
-      "Drag-and-drop mod installation — drop .json or .zip files onto the window",
-      "Quick folder access — open mods folder or game directory from sidebar buttons",
-      "Export/import mod lists — share your setup with SHA-256 hash verification",
-      "Auto-refresh — polls the mods folder every 3 seconds for new or removed mods",
+      "Automatic Steam game directory detection across all drives",
+      "First-startup initialization with automatic vanilla backup",
+      "Pre-flight validation, detailed diagnostics, and interrupted mount recovery",
+      "Mod profiles for instant switching between mod configurations",
+      "Backup manager with manual backup, individual restore, and bulk restore",
+      "Language & Fonts section with translation patches and font replacement",
+      "ASI/DLL mod management with loader auto-install",
+      "ReShade integration with preset management and toggle",
+      "Nexus Mods integration — update checking and mod ID search with local caching",
+      "Multi-format import — JSON, ZIP, and Nexus download folder detection",
+      "Drag-and-drop mod installation",
+      "Game version tracking with compatibility warnings",
+      "PAPGT overlay monitoring in the status bar",
       "Real-time activity log with timestamped, color-coded entries",
-      "Custom frameless window with dark theme, accent glow line, and sharp UI",
-      "Built with Tauri (Rust) + React + Tailwind — compact binary vs 67MB alternatives",
+      "Custom frameless window with dark theme and accent glow",
+      "Standalone single exe — built with Tauri (Rust) + React + Tailwind, zero dependencies",
     ],
   },
 ];
@@ -132,11 +125,10 @@ export function AboutView() {
         </div>
       </div>
 
-      {/* Two-column layout */}
-      <div className="flex-1 overflow-y-auto">
-        <div className="flex gap-0 min-h-full">
+      {/* Two-column layout — each column scrolls independently */}
+      <div className="flex-1 flex min-h-0">
           {/* Left: Features */}
-          <div className="flex-1 border-r border-border/20" style={{ padding: "24px 32px" }}>
+          <div className="flex-1 border-r border-border/20 overflow-y-auto" style={{ padding: "24px 32px" }}>
             <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-text-muted/60" style={{ marginBottom: "20px" }}>
               Features ({features.length})
             </h2>
@@ -154,7 +146,7 @@ export function AboutView() {
           </div>
 
           {/* Right: Changelog */}
-          <div className="flex-1" style={{ padding: "24px 32px" }}>
+          <div className="flex-1 overflow-y-auto" style={{ padding: "24px 32px" }}>
             <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-text-muted/60" style={{ marginBottom: "20px" }}>
               Changelog
             </h2>
@@ -182,14 +174,46 @@ export function AboutView() {
               ))}
             </div>
 
-            {/* Footer */}
+            {/* Compatibility */}
             <div className="border-t border-border/20" style={{ marginTop: "32px", paddingTop: "20px" }}>
+              <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-text-muted/60" style={{ marginBottom: "12px" }}>
+                Supported Mod Formats
+              </h2>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                <p className="text-sm text-text-secondary flex items-center gap-2">
+                  <span className="text-accent">&#8226;</span>
+                  JSON byte-patch mods (.json) — the standard Crimson Desert modding format
+                </p>
+                <p className="text-sm text-text-secondary flex items-center gap-2">
+                  <span className="text-accent">&#8226;</span>
+                  File replacement mods (manifest.json + files/) — full PAZ file overrides
+                </p>
+                <p className="text-sm text-text-secondary flex items-center gap-2">
+                  <span className="text-accent">&#8226;</span>
+                  DDS texture mods — folder-based texture replacements via PATHC
+                </p>
+                <p className="text-sm text-text-secondary flex items-center gap-2">
+                  <span className="text-accent">&#8226;</span>
+                  Font mods (.ttf / .otf) — per-language font replacement
+                </p>
+                <p className="text-sm text-text-secondary flex items-center gap-2">
+                  <span className="text-accent">&#8226;</span>
+                  ASI / DLL plugins — native code mods with loader management
+                </p>
+                <p className="text-sm text-text-secondary flex items-center gap-2">
+                  <span className="text-accent">&#8226;</span>
+                  ReShade presets — post-processing shader management
+                </p>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="border-t border-border/20" style={{ marginTop: "24px", paddingTop: "20px" }}>
               <p className="text-xs text-text-muted flex items-center gap-1.5">
                 Built with <Heart className="w-3 h-3 text-danger" /> using Tauri + React + Rust
               </p>
             </div>
           </div>
-        </div>
       </div>
     </div>
   );

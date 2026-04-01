@@ -288,6 +288,18 @@ export interface TextureApplyResult {
   errors: string[];
 }
 
+// Crimson Browser Mods
+export interface BrowserModEntry {
+  folder_name: string;
+  title: string;
+  author: string;
+  version: string;
+  description: string;
+  file_count: number;
+  enabled: boolean;
+  mod_type: string;
+}
+
 // Font Replacement
 export interface GameFontEntry {
   filename: string;

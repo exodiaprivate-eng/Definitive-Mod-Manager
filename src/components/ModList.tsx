@@ -21,10 +21,11 @@ import {
   Download,
   Image,
   Check,
+  Puzzle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ModCard } from "./ModCard";
-import type { ModEntry, ModChange, ModUpdateStatus, TextureModEntry } from "@/types";
+import type { ModEntry, ModChange, ModUpdateStatus, TextureModEntry, BrowserModEntry } from "@/types";
 
 interface PatchDetail {
   game_file: string;
@@ -58,6 +59,9 @@ interface ModListProps {
   textureMods?: TextureModEntry[];
   activeTextures?: string[];
   onToggleTexture?: (folderName: string) => void;
+  browserMods?: BrowserModEntry[];
+  activeBrowserMods?: string[];
+  onToggleBrowserMod?: (folderName: string) => void;
 }
 
 export function ModList({
@@ -85,6 +89,9 @@ export function ModList({
   textureMods = [],
   activeTextures = [],
   onToggleTexture,
+  browserMods = [],
+  activeBrowserMods = [],
+  onToggleBrowserMod,
 }: ModListProps) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<FilterMode>("all");
@@ -152,14 +159,6 @@ export function ModList({
               </button>
             )}
             <button
-              onClick={onRevert}
-              style={{ padding: "8px 16px", fontSize: "13px" }}
-              className="flex items-center gap-3 font-medium text-warning bg-warning/10 border border-warning/20 rounded-sm hover:bg-warning/20 transition-all"
-            >
-              <RotateCcw className="w-5 h-5" />
-              Unmount
-            </button>
-            <button
               onClick={onCheck}
               style={{ padding: "8px 16px", fontSize: "13px" }}
               className="flex items-center gap-3 font-medium text-text-secondary bg-white/[0.03] border border-border/60 rounded-sm hover:bg-white/[0.06] hover:border-border-hover transition-all"
@@ -174,6 +173,14 @@ export function ModList({
             >
               <Wrench className="w-5 h-5" />
               Recover
+            </button>
+            <button
+              onClick={onRevert}
+              style={{ padding: "8px 16px", fontSize: "13px" }}
+              className="flex items-center gap-3 font-medium text-warning bg-warning/10 border border-warning/20 rounded-sm hover:bg-warning/20 transition-all"
+            >
+              <RotateCcw className="w-5 h-5" />
+              Unmount
             </button>
             <button
               onClick={onApply}
@@ -362,6 +369,77 @@ export function ModList({
 
                       <span className="text-[11px] font-mono bg-white/[0.03] text-text-muted px-2.5 py-1 rounded-sm border border-border/30">
                         texture
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* File Replacement Mods */}
+        {browserMods.length > 0 && (
+          <div style={{ marginTop: "24px" }}>
+            <p className="text-xs font-bold uppercase tracking-[0.15em] text-text-muted/60 mb-4 flex items-center gap-2">
+              <Puzzle className="w-4 h-4" />
+              File Replacement Mods ({browserMods.length})
+            </p>
+            <div className="space-y-3">
+              {browserMods.map((mod) => {
+                const enabled = activeBrowserMods.includes(mod.folder_name);
+                return (
+                  <div
+                    key={mod.folder_name}
+                    className={cn(
+                      "group rounded-sm border relative overflow-hidden transition-all cursor-pointer",
+                      enabled
+                        ? "bg-accent/[0.03] border-accent/30 hover:border-accent/50"
+                        : "bg-surface/80 border-border/60 hover:border-border-hover"
+                    )}
+                    onClick={() => onToggleBrowserMod?.(mod.folder_name)}
+                  >
+                    <div className={cn(
+                      "absolute left-0 top-0 bottom-0 w-1 transition-all duration-300",
+                      enabled ? "bg-accent/70" : "bg-border/30 group-hover:bg-accent/50"
+                    )} />
+
+                    <div className="flex items-center gap-5 pl-6 pr-5 py-5">
+                      <div
+                        className={cn(
+                          "w-5 h-5 rounded-sm border flex items-center justify-center shrink-0 transition-all",
+                          enabled ? "bg-accent border-accent" : "border-border/60 bg-transparent"
+                        )}
+                      >
+                        {enabled && <Check className="w-3.5 h-3.5 text-white" />}
+                      </div>
+
+                      <div className="w-8 h-8 rounded-sm flex items-center justify-center bg-white/[0.03] border border-border/40 shrink-0">
+                        <Puzzle className={cn("w-4 h-4", enabled ? "text-accent" : "text-text-muted")} />
+                      </div>
+
+                      <div className="flex-1 min-w-0">
+                        <h3 className={cn("text-base font-semibold truncate", enabled ? "text-text-primary" : "text-text-secondary")}>
+                          {mod.title}
+                        </h3>
+                        <div className="flex items-center gap-5 mt-1.5">
+                          <span className="text-sm text-text-muted">
+                            by {mod.author}
+                          </span>
+                          {mod.version && (
+                            <span className="text-sm text-text-muted">v{mod.version}</span>
+                          )}
+                          <span className="text-sm text-text-muted">
+                            <span className={cn("font-semibold", enabled ? "text-accent" : "text-text-secondary")}>{mod.file_count}</span> file{mod.file_count !== 1 ? "s" : ""}
+                          </span>
+                        </div>
+                        {mod.description && (
+                          <p className="text-xs text-text-muted/70 mt-1.5 truncate">{mod.description}</p>
+                        )}
+                      </div>
+
+                      <span className="text-[11px] font-mono bg-white/[0.03] text-text-muted px-2.5 py-1 rounded-sm border border-border/30">
+                        file replace
                       </span>
                     </div>
                   </div>

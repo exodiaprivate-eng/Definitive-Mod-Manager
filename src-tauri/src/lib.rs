@@ -30,6 +30,7 @@ pub fn run() {
             commands::delete_mod,
             commands::scan_lang_mods,
             commands::import_archive,
+            commands::import_folder,
             commands::auto_detect_game_path,
             commands::launch_game,
             commands::get_papgt_status,
@@ -104,6 +105,8 @@ pub fn run() {
             commands::scan_texture_mods,
             commands::apply_texture_mods,
             commands::revert_texture_mods,
+            // Crimson Browser Mods
+            commands::scan_browser_mods,
             // Font Replacement
             commands::scan_game_fonts,
             commands::replace_game_font,

@@ -193,6 +193,9 @@ export function ModCard({ mod, index, onToggle, dragHandleProps, disabledIndices
               <FileCode2 className="w-3.5 h-3.5" />
               {mod.patch_count} patches
             </span>
+            <span className="text-[11px] font-mono bg-white/[0.03] text-text-muted/70 px-2.5 py-0.5 rounded-sm border border-border/30">
+              json patch
+            </span>
             {mod.enabled && isMounted !== undefined && (
               isMounted ? (
                 <span className="text-xs font-medium text-success border border-success/25 bg-success/10 rounded-sm" style={{ padding: "2px 8px" }}>

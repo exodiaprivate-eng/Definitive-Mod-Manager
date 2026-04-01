@@ -25,7 +25,7 @@ import { PreflightDialog } from "@/components/PreflightDialog";
 import { CheckResultDialog } from "@/components/CheckResultDialog";
 import { LogPanel, type LogEntry } from "@/components/LogPanel";
 import { StatusBar } from "@/components/StatusBar";
-import type { AppConfig, ModEntry, ConflictInfo, ActiveMod, ApplyResult, LangModEntry, PapgtStatus, ModProfile, BackupInfo, GameVersion, PreflightResult, RecoverResult, DetailedCheckResult, ModChange, NexusIdMapping, ModUpdateStatus, NexusCacheEntry, AsiStatus, ReshadeStatus, ModPack, Snapshot, NewModData, CommunityProfile, TextureModEntry, TextureApplyResult, GameFontEntry, FontReplaceResult } from "@/types";
+import type { AppConfig, ModEntry, ConflictInfo, ActiveMod, ApplyResult, LangModEntry, PapgtStatus, ModProfile, BackupInfo, GameVersion, PreflightResult, RecoverResult, DetailedCheckResult, ModChange, NexusIdMapping, ModUpdateStatus, NexusCacheEntry, AsiStatus, ReshadeStatus, ModPack, Snapshot, NewModData, CommunityProfile, TextureModEntry, TextureApplyResult, GameFontEntry, FontReplaceResult, BrowserModEntry } from "@/types";
 
 interface PatchDetail {
   game_file: string;
@@ -52,6 +52,10 @@ export default function App() {
   const [langMods, setLangMods] = useState<LangModEntry[]>([]);
   const [conflicts, setConflicts] = useState<ConflictInfo[]>([]);
   const [gamePathValid, setGamePathValid] = useState(false);
+  const [theme, setTheme] = useState<"dark" | "light">(() => {
+    const saved = localStorage.getItem("dmm-theme");
+    return saved === "light" ? "light" : "dark";
+  });
   const [applying, setApplying] = useState(false);
   const [, setLoaded] = useState(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -81,12 +85,23 @@ export default function App() {
   const [textureMods, setTextureMods] = useState<TextureModEntry[]>([]);
   const [activeTextures, setActiveTextures] = useState<string[]>([]);
   const [gameFonts, setGameFonts] = useState<GameFontEntry[]>([]);
+  const [browserMods, setBrowserMods] = useState<BrowserModEntry[]>([]);
+  const [activeBrowserMods, setActiveBrowserMods] = useState<string[]>([]);
 
   const addLog = useCallback((message: string, level: LogEntry["level"] = "info") => {
     const now = new Date();
     const timestamp = now.toLocaleTimeString("en-US", { hour12: false }) + "." + String(now.getMilliseconds()).padStart(3, "0");
     setLogs((prev) => [...prev, { timestamp, message, level }]);
   }, []);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("light", theme === "light");
+    localStorage.setItem("dmm-theme", theme);
+  }, [theme]);
+
+  function toggleTheme() {
+    setTheme((prev) => (prev === "dark" ? "light" : "dark"));
+  }
 
   function clearLogs() {
     setLogs([]);
@@ -140,7 +155,7 @@ export default function App() {
 
   useEffect(() => {
     async function init() {
-      addLog("Definitive Mod Manager v1.0.2 loaded", "success");
+      addLog("Definitive Mod Manager v1.0.0 loaded", "success");
 
       // Determine app directory dynamically from exe location
       let appDir = "";
@@ -234,18 +249,29 @@ export default function App() {
     init();
   }, []);
 
+  // Re-scan mod list when active mods change (lightweight)
   useEffect(() => {
     if (!config.modsPath) return;
     scanMods();
     scanLangMods();
+  }, [config.modsPath, config.activeMods, config.activeLangMod]);
+
+  // Heavy scans — only run when paths change, not on every toggle
+  useEffect(() => {
+    if (!config.modsPath) return;
     scanTextureMods();
-    scanGameFonts();
+    scanBrowserMods();
     loadProfiles();
     loadBackups();
     loadModPacks();
     loadSnapshots();
     parseNexusIds();
-  }, [config.modsPath, config.activeMods, config.activeLangMod]);
+  }, [config.modsPath]);
+
+  useEffect(() => {
+    if (!config.gamePath) return;
+    scanGameFonts();
+  }, [config.gamePath]);
 
   // Drag-and-drop: listen for files dropped onto the window
   useEffect(() => {
@@ -263,26 +289,32 @@ export default function App() {
 
           let imported = 0;
           for (const filePath of paths) {
-            const ext = filePath.split(".").pop()?.toLowerCase();
-            if (ext === "json" || ext === "zip") {
-              try {
-                if (ext === "zip") {
-                  await invoke("import_archive", { archivePath: filePath, modsPath: config.modsPath });
-                } else {
-                  await invoke("import_mod", { sourcePath: filePath, modsPath: config.modsPath });
-                }
+            const name = filePath.split(/[\\/]/).pop() || filePath;
+            const ext = name.split(".").pop()?.toLowerCase();
+            try {
+              if (ext === "zip") {
+                await invoke("import_archive", { archivePath: filePath, modsPath: config.modsPath });
                 imported++;
-                addLog(`Imported: ${filePath.split(/[\\/]/).pop()}`, "success");
-              } catch (e) {
-                addLog(`Import failed: ${filePath.split(/[\\/]/).pop()} — ${e}`, "error");
+                addLog(`Imported archive: ${name}`, "success");
+              } else if (ext === "json") {
+                await invoke("import_mod", { sourcePath: filePath, modsPath: config.modsPath });
+                imported++;
+                addLog(`Imported: ${name}`, "success");
+              } else {
+                // Try as folder (file replacement mod or texture mod)
+                const result = await invoke<string>("import_folder", { sourcePath: filePath, modsPath: config.modsPath });
+                imported++;
+                addLog(`Imported folder: ${result}`, "success");
               }
+            } catch (e) {
+              addLog(`Import failed: ${name} — ${e}`, "error");
             }
           }
           if (imported > 0) {
             toast.success(`Imported ${imported} mod(s)`);
             scanMods();
-          } else {
-            toast.warning("No valid mod files found (expected .json or .zip)");
+            scanBrowserMods();
+            scanTextureMods();
           }
         }
       }
@@ -291,26 +323,53 @@ export default function App() {
     return () => { unlisten.then((fn) => fn()); };
   }, [config.modsPath]);
 
-  // Auto-refresh: poll for new/removed mods every 3 seconds
+  // Auto-refresh: poll for new/removed JSON mods every 3 seconds
   useEffect(() => {
     if (!config.modsPath) return;
 
+    let tick = 0;
     const interval = setInterval(() => {
-      // Silent re-scan (no logging)
+      tick++;
+      // JSON mods — every 3 seconds (lightweight, just reads filenames)
       invoke<ModEntry[]>("scan_mods", {
         modsPath: config.modsPath,
         activeMods: config.activeMods,
       }).then((entries) => {
-        // Only update if the count changed (avoid unnecessary re-renders)
         setMods((prev) => {
           if (prev.length !== entries.length) return entries;
-          // Check if any file names changed
           const prevNames = prev.map(m => m.file_name).sort().join(",");
           const newNames = entries.map(m => m.file_name).sort().join(",");
           if (prevNames !== newNames) return entries;
           return prev;
         });
       }).catch(() => {});
+
+      // Browser + texture mods — every 15 seconds (recursive filesystem walk)
+      if (tick % 5 === 0) {
+        invoke<BrowserModEntry[]>("scan_browser_mods", {
+          modsPath: config.modsPath,
+        }).then((entries) => {
+          setBrowserMods((prev) => {
+            if (prev.length !== entries.length) return entries;
+            const prevNames = prev.map(m => m.folder_name).sort().join(",");
+            const newNames = entries.map(m => m.folder_name).sort().join(",");
+            if (prevNames !== newNames) return entries;
+            return prev;
+          });
+        }).catch(() => {});
+
+        invoke<TextureModEntry[]>("scan_texture_mods", {
+          modsPath: config.modsPath,
+        }).then((entries) => {
+          setTextureMods((prev) => {
+            if (prev.length !== entries.length) return entries;
+            const prevNames = prev.map(m => m.folder_name).sort().join(",");
+            const newNames = entries.map(m => m.folder_name).sort().join(",");
+            if (prevNames !== newNames) return entries;
+            return prev;
+          });
+        }).catch(() => {});
+      }
     }, 3000);
 
     return () => clearInterval(interval);
@@ -339,6 +398,7 @@ export default function App() {
     invoke<ConflictInfo[]>("check_conflicts", {
       modsPath: config.modsPath,
       activeMods: activeFileNames,
+      browserModFolders: activeBrowserMods.length > 0 ? activeBrowserMods : null,
     })
       .then(setConflicts)
       .catch(() => setConflicts([]));
@@ -442,6 +502,31 @@ export default function App() {
     }
   }
 
+  async function scanBrowserMods() {
+    if (!config.modsPath) return;
+    try {
+      const entries = await invoke<BrowserModEntry[]>("scan_browser_mods", {
+        modsPath: config.modsPath,
+      });
+      setBrowserMods(entries);
+      if (entries.length > 0) {
+        addLog(`Found ${entries.length} file replacement mod(s)`, "info");
+        // Auto-enable all detected browser mods
+        setActiveBrowserMods(entries.filter(e => e.enabled).map(e => e.folder_name));
+      }
+    } catch (e) {
+      setBrowserMods([]);
+    }
+  }
+
+  function toggleBrowserMod(folderName: string) {
+    setActiveBrowserMods((prev) =>
+      prev.includes(folderName)
+        ? prev.filter((f) => f !== folderName)
+        : [...prev, folderName]
+    );
+  }
+
   async function replaceGameFont(fontGamePath: string) {
     try {
       const selected = await open({
@@ -449,7 +534,7 @@ export default function App() {
         filters: [{ name: "Font Files", extensions: ["ttf", "otf"] }],
       });
       if (!selected) return;
-      const replacementPath = typeof selected === "string" ? selected : selected.path;
+      const replacementPath = typeof selected === "string" ? selected : (selected as unknown as { path: string }).path;
 
       const backupDir = getAppBaseDir() + "\\backups";
       const result = await invoke<FontReplaceResult>("replace_game_font", {
@@ -1268,6 +1353,7 @@ export default function App() {
         modsPath: config.modsPath,
         activeMods: allActiveMods,
         backupDir,
+        browserModFolders: activeBrowserMods.length > 0 ? activeBrowserMods : null,
       });
 
       if (result.success) {
@@ -1632,6 +1718,9 @@ export default function App() {
                 textureMods={textureMods}
                 activeTextures={activeTextures}
                 onToggleTexture={toggleTextureMod}
+                browserMods={browserMods}
+                activeBrowserMods={activeBrowserMods}
+                onToggleBrowserMod={toggleBrowserMod}
               />
             )}
             {view === "conflicts" && <ConflictView conflicts={conflicts} />}
@@ -1682,6 +1771,8 @@ export default function App() {
                 onCheckUpdates={checkForUpdates}
                 checkingUpdates={checkingUpdates}
                 outdatedCount={Object.values(updateStatuses).filter((s) => s.is_outdated).length}
+                theme={theme}
+                onToggleTheme={toggleTheme}
               />
             )}
             {view === "profiles" && (

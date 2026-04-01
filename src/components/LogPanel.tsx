@@ -37,7 +37,7 @@ export function LogPanel({ logs, onClear }: LogPanelProps) {
   }, [logs]);
 
   return (
-    <div className="flex flex-col h-full bg-[#08080e]">
+    <div className="flex flex-col h-full bg-background">
       {/* Header */}
       <div className="shrink-0 flex items-center justify-between px-8 py-3 border-b border-border/30">
         <div className="flex items-center gap-3">

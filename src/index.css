@@ -1,29 +1,75 @@
 @import "tailwindcss";
 
 @theme inline {
-  --color-background: #08080d;
-  --color-surface: #101018;
-  --color-surface-hover: #181824;
-  --color-surface-active: #20202e;
-  --color-border: #252538;
-  --color-border-hover: #35354e;
-  --color-text-primary: #eeeef4;
-  --color-text-secondary: #9090aa;
-  --color-text-muted: #555570;
-  --color-accent: #6366f1;
-  --color-accent-hover: #818cf8;
-  --color-accent-muted: rgba(99, 102, 241, 0.15);
-  --color-success: #10b981;
-  --color-success-muted: rgba(16, 185, 129, 0.15);
-  --color-warning: #f59e0b;
-  --color-warning-muted: rgba(245, 158, 11, 0.15);
-  --color-danger: #ef4444;
-  --color-danger-muted: rgba(239, 68, 68, 0.15);
-  --color-glow: rgba(99, 102, 241, 0.08);
+  --color-background: var(--dm-background);
+  --color-surface: var(--dm-surface);
+  --color-surface-hover: var(--dm-surface-hover);
+  --color-surface-active: var(--dm-surface-active);
+  --color-border: var(--dm-border);
+  --color-border-hover: var(--dm-border-hover);
+  --color-text-primary: var(--dm-text-primary);
+  --color-text-secondary: var(--dm-text-secondary);
+  --color-text-muted: var(--dm-text-muted);
+  --color-accent: var(--dm-accent);
+  --color-accent-hover: var(--dm-accent-hover);
+  --color-accent-muted: var(--dm-accent-muted);
+  --color-success: var(--dm-success);
+  --color-success-muted: var(--dm-success-muted);
+  --color-warning: var(--dm-warning);
+  --color-warning-muted: var(--dm-warning-muted);
+  --color-danger: var(--dm-danger);
+  --color-danger-muted: var(--dm-danger-muted);
+  --color-glow: var(--dm-glow);
   --radius-sm: 2px;
   --radius-md: 2px;
   --radius-lg: 3px;
   --radius-xl: 3px;
+}
+
+/* Dark theme (default) */
+:root {
+  --dm-background: #08080d;
+  --dm-surface: #101018;
+  --dm-surface-hover: #181824;
+  --dm-surface-active: #20202e;
+  --dm-border: #252538;
+  --dm-border-hover: #35354e;
+  --dm-text-primary: #eeeef4;
+  --dm-text-secondary: #9090aa;
+  --dm-text-muted: #555570;
+  --dm-accent: #6366f1;
+  --dm-accent-hover: #818cf8;
+  --dm-accent-muted: rgba(99, 102, 241, 0.15);
+  --dm-success: #10b981;
+  --dm-success-muted: rgba(16, 185, 129, 0.15);
+  --dm-warning: #f59e0b;
+  --dm-warning-muted: rgba(245, 158, 11, 0.15);
+  --dm-danger: #ef4444;
+  --dm-danger-muted: rgba(239, 68, 68, 0.15);
+  --dm-glow: rgba(99, 102, 241, 0.08);
+}
+
+/* Light theme */
+html.light {
+  --dm-background: #f4f4f8;
+  --dm-surface: #ffffff;
+  --dm-surface-hover: #ededf3;
+  --dm-surface-active: #e4e4ee;
+  --dm-border: #d0d0de;
+  --dm-border-hover: #b8b8cc;
+  --dm-text-primary: #1a1a2e;
+  --dm-text-secondary: #50506a;
+  --dm-text-muted: #8080a0;
+  --dm-accent: #5558e8;
+  --dm-accent-hover: #4f46e5;
+  --dm-accent-muted: rgba(85, 88, 232, 0.12);
+  --dm-success: #059669;
+  --dm-success-muted: rgba(5, 150, 105, 0.12);
+  --dm-warning: #d97706;
+  --dm-warning-muted: rgba(217, 119, 6, 0.12);
+  --dm-danger: #dc2626;
+  --dm-danger-muted: rgba(220, 38, 38, 0.12);
+  --dm-glow: rgba(85, 88, 232, 0.06);
 }
 
 * {
@@ -93,3 +139,41 @@ button, a, input, select {
 .sidebar-bg {
   background: linear-gradient(180deg, #0d0d16 0%, #101018 100%);
 }
+html.light .sidebar-bg {
+  background: linear-gradient(180deg, #f8f8fc 0%, #ffffff 100%);
+}
+
+/* Light mode scrollbar */
+html.light ::-webkit-scrollbar-thumb {
+  background: rgba(99, 102, 241, 0.25);
+}
+html.light ::-webkit-scrollbar-thumb:hover {
+  background: rgba(99, 102, 241, 0.4);
+}
+html.light .accent-line {
+  opacity: 0.5;
+}
+html.light .card-lift:hover {
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08), 0 0 30px rgba(99, 102, 241, 0.04);
+}
+html.light .pulse-glow {
+  animation: pulse-glow-light 2s ease-in-out infinite;
+}
+@keyframes pulse-glow-light {
+  0%, 100% { box-shadow: 0 0 15px rgba(5, 150, 105, 0.2); }
+  50% { box-shadow: 0 0 25px rgba(5, 150, 105, 0.35), 0 0 40px rgba(5, 150, 105, 0.1); }
+}
+
+/* Light mode: flip semi-transparent white bgs to semi-transparent black */
+html.light .bg-white\/\[0\.02\] { background-color: rgba(0, 0, 0, 0.02) !important; }
+html.light .bg-white\/\[0\.03\] { background-color: rgba(0, 0, 0, 0.03) !important; }
+html.light .bg-white\/\[0\.04\] { background-color: rgba(0, 0, 0, 0.04) !important; }
+html.light .bg-white\/\[0\.05\] { background-color: rgba(0, 0, 0, 0.05) !important; }
+html.light .bg-white\/\[0\.06\] { background-color: rgba(0, 0, 0, 0.05) !important; }
+html.light .bg-white\/5 { background-color: rgba(0, 0, 0, 0.04) !important; }
+html.light .bg-white\/10 { background-color: rgba(0, 0, 0, 0.06) !important; }
+html.light .hover\:bg-white\/\[0\.04\]:hover { background-color: rgba(0, 0, 0, 0.04) !important; }
+html.light .hover\:bg-white\/\[0\.06\]:hover { background-color: rgba(0, 0, 0, 0.05) !important; }
+html.light .hover\:bg-white\/\[0\.08\]:hover { background-color: rgba(0, 0, 0, 0.06) !important; }
+html.light .hover\:bg-white\/5:hover { background-color: rgba(0, 0, 0, 0.04) !important; }
+html.light .focus-within\:bg-white\/\[0\.04\]:focus-within { background-color: rgba(0, 0, 0, 0.04) !important; }

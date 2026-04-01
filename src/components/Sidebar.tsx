@@ -38,17 +38,21 @@ interface NavItemProps {
   onClick: () => void;
   badge?: number;
   badgeColor?: string;
+  disabled?: boolean;
 }
 
-function NavItem({ icon, label, active, onClick, badge, badgeColor }: NavItemProps) {
+function NavItem({ icon, label, active, onClick, badge, badgeColor, disabled }: NavItemProps) {
   return (
     <button
-      onClick={onClick}
+      onClick={disabled ? undefined : onClick}
+      disabled={disabled}
       className={cn(
         "w-full flex items-center gap-3.5 px-5 py-3.5 rounded-sm text-[15px] font-medium transition-all duration-200 relative overflow-hidden",
-        active
-          ? "bg-gradient-to-r from-accent/20 to-accent/5 text-accent shadow-[inset_0_0_0_1px_rgba(99,102,241,0.25),0_0_20px_rgba(99,102,241,0.08)]"
-          : "text-text-secondary hover:text-text-primary hover:bg-white/[0.03]"
+        disabled
+          ? "text-text-muted/40 cursor-not-allowed"
+          : active
+            ? "bg-gradient-to-r from-accent/20 to-accent/5 text-accent shadow-[inset_0_0_0_1px_rgba(99,102,241,0.25),0_0_20px_rgba(99,102,241,0.08)]"
+            : "text-text-secondary hover:text-text-primary hover:bg-white/[0.03]"
       )}
     >
       {active && (
@@ -136,9 +140,10 @@ export function Sidebar({ activeView, onViewChange, modCount, activeCount, confl
             />
             <NavItem
               icon={<Hammer className="w-5 h-5" />}
-              label="Create Mod"
-              active={activeView === "creator"}
-              onClick={() => onViewChange("creator")}
+              label="Create Mod (Coming Soon)"
+              active={false}
+              onClick={() => {}}
+              disabled
             />
           </div>
         </div>

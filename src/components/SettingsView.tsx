@@ -1,4 +1,4 @@
-import { FolderOpen, Check, AlertCircle, HardDrive, RefreshCw, Globe } from "lucide-react";
+import { FolderOpen, Check, AlertCircle, HardDrive, RefreshCw, Globe, Sun, Moon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface SettingsViewProps {
@@ -14,6 +14,8 @@ interface SettingsViewProps {
   onCheckUpdates: () => void;
   checkingUpdates?: boolean;
   outdatedCount?: number;
+  theme?: "dark" | "light";
+  onToggleTheme?: () => void;
 }
 
 export function SettingsView({
@@ -27,6 +29,8 @@ export function SettingsView({
   onCheckUpdates,
   checkingUpdates = false,
   outdatedCount = 0,
+  theme = "dark",
+  onToggleTheme,
 }: SettingsViewProps) {
   return (
     <div className="h-full flex flex-col">
@@ -150,6 +154,27 @@ export function SettingsView({
             <p className="text-sm text-text-muted" style={{ marginTop: "12px" }}>
               Automatically checks installed mods against Nexus Mods for available updates
             </p>
+          </div>
+
+          {/* Theme */}
+          <div className="border border-border bg-surface" style={{ padding: "20px" }}>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                {theme === "dark" ? <Moon className="w-5 h-5 text-accent" /> : <Sun className="w-5 h-5 text-accent" />}
+                <div>
+                  <h2 className="text-base font-semibold text-text-primary">Appearance</h2>
+                  <p className="text-sm text-text-muted mt-1">Currently using <span className="text-text-secondary font-semibold">{theme}</span> mode</p>
+                </div>
+              </div>
+              <button
+                onClick={onToggleTheme}
+                style={{ padding: "8px 16px", fontSize: "13px" }}
+                className="flex items-center gap-2 font-medium text-accent bg-accent/10 border border-accent/20 rounded-sm hover:bg-accent/20 transition-all"
+              >
+                {theme === "dark" ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+                Switch to {theme === "dark" ? "Light" : "Dark"} Mode
+              </button>
+            </div>
           </div>
 
           {/* Info */}
