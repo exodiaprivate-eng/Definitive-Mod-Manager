@@ -34,6 +34,8 @@ export interface AppConfig {
   modsPath: string;
   activeMods: ActiveMod[];
   activeAsiMods: string[];
+  activeTextures: string[];
+  activeBrowserMods: string[];
   activeLangMod: string | null;
   selectedLanguage: string;
   nexusApiKey: string;

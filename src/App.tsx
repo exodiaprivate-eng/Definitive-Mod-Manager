@@ -39,6 +39,8 @@ const DEFAULT_CONFIG: AppConfig = {
   modsPath: "",
   activeMods: [],
   activeAsiMods: [],
+  activeTextures: [],
+  activeBrowserMods: [],
   activeLangMod: null,
   selectedLanguage: "english",
   nexusApiKey: "",
@@ -83,10 +85,10 @@ export default function App() {
   const [thumbnails, setThumbnails] = useState<Record<string, string>>({});
   const [importedProfile, setImportedProfile] = useState<CommunityProfile | null>(null);
   const [textureMods, setTextureMods] = useState<TextureModEntry[]>([]);
-  const [activeTextures, setActiveTextures] = useState<string[]>([]);
+  const activeTextures = config.activeTextures || [];
   const [gameFonts, setGameFonts] = useState<GameFontEntry[]>([]);
   const [browserMods, setBrowserMods] = useState<BrowserModEntry[]>([]);
-  const [activeBrowserMods, setActiveBrowserMods] = useState<string[]>([]);
+  const activeBrowserMods = config.activeBrowserMods || [];
 
   const addLog = useCallback((message: string, level: LogEntry["level"] = "info") => {
     const now = new Date();
@@ -480,11 +482,11 @@ export default function App() {
   }
 
   function toggleTextureMod(folderName: string) {
-    setActiveTextures((prev) =>
-      prev.includes(folderName)
-        ? prev.filter((f) => f !== folderName)
-        : [...prev, folderName]
-    );
+    const current = config.activeTextures || [];
+    const updated = current.includes(folderName)
+      ? current.filter((f) => f !== folderName)
+      : [...current, folderName];
+    saveConfig({ ...config, activeTextures: updated });
   }
 
   async function scanGameFonts() {
@@ -511,8 +513,12 @@ export default function App() {
       setBrowserMods(entries);
       if (entries.length > 0) {
         addLog(`Found ${entries.length} file replacement mod(s)`, "info");
-        // Auto-enable all detected browser mods
-        setActiveBrowserMods(entries.filter(e => e.enabled).map(e => e.folder_name));
+        // Auto-enable newly detected browser mods (only if not already in config)
+        const current = config.activeBrowserMods || [];
+        const newOnes = entries.filter(e => e.enabled).map(e => e.folder_name).filter(f => !current.includes(f));
+        if (newOnes.length > 0) {
+          saveConfig({ ...config, activeBrowserMods: [...current, ...newOnes] });
+        }
       }
     } catch (e) {
       setBrowserMods([]);
@@ -520,11 +526,11 @@ export default function App() {
   }
 
   function toggleBrowserMod(folderName: string) {
-    setActiveBrowserMods((prev) =>
-      prev.includes(folderName)
-        ? prev.filter((f) => f !== folderName)
-        : [...prev, folderName]
-    );
+    const current = config.activeBrowserMods || [];
+    const updated = current.includes(folderName)
+      ? current.filter((f) => f !== folderName)
+      : [...current, folderName];
+    saveConfig({ ...config, activeBrowserMods: updated });
   }
 
   async function replaceGameFont(fontGamePath: string) {
@@ -1800,11 +1806,7 @@ export default function App() {
                 onModsPathChange={(p) => saveConfig({ ...config, modsPath: p })}
                 onBrowseGamePath={browseGamePath}
                 onBrowseModsPath={browseModsPath}
-                nexusApiKey={config.nexusApiKey}
-                onNexusApiKeyChange={(key) => saveConfig({ ...config, nexusApiKey: key })}
-                onCheckUpdates={checkForUpdates}
-                checkingUpdates={checkingUpdates}
-                outdatedCount={Object.values(updateStatuses).filter((s) => s.is_outdated).length}
+
                 theme={theme}
                 onToggleTheme={toggleTheme}
               />

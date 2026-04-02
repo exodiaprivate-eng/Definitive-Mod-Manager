@@ -56,6 +56,10 @@ pub struct AppConfig {
     pub active_mods: Vec<ActiveMod>,
     #[serde(rename = "activeAsiMods")]
     pub active_asi_mods: Vec<String>,
+    #[serde(rename = "activeTextures", default)]
+    pub active_textures: Vec<String>,
+    #[serde(rename = "activeBrowserMods", default)]
+    pub active_browser_mods: Vec<String>,
     #[serde(rename = "activeLangMod", default, skip_serializing_if = "Option::is_none")]
     pub active_lang_mod: Option<String>,
     #[serde(rename = "selectedLanguage", default = "default_language")]
@@ -1918,20 +1922,74 @@ pub fn import_folder(source_path: String, mods_path: String) -> Result<String, S
 
 #[tauri::command]
 pub fn auto_detect_game_path() -> Result<Option<String>, String> {
-    let candidates = [
-        r"C:\Program Files (x86)\Steam\steamapps\common\Crimson Desert",
-        r"C:\Program Files\Steam\steamapps\common\Crimson Desert",
-        r"D:\Steam\steamapps\common\Crimson Desert",
-        r"D:\SteamLibrary\steamapps\common\Crimson Desert",
-        r"E:\Steam\steamapps\common\Crimson Desert",
-        r"E:\SteamLibrary\steamapps\common\Crimson Desert",
+    // Step 1: Read Steam's libraryfolders.vdf to find ALL Steam library locations
+    let steam_paths = [
+        r"C:\Program Files (x86)\Steam",
+        r"C:\Program Files\Steam",
+        r"D:\Steam",
+        r"E:\Steam",
+        r"F:\Steam",
     ];
 
-    for candidate in &candidates {
-        let path = Path::new(candidate);
-        let exe = path.join("bin64").join("CrimsonDesert.exe");
-        if path.exists() && exe.exists() {
-            return Ok(Some(candidate.to_string()));
+    let mut library_dirs: Vec<String> = Vec::new();
+
+    for steam_path in &steam_paths {
+        let vdf_path = Path::new(steam_path).join("steamapps").join("libraryfolders.vdf");
+        if let Ok(content) = fs::read_to_string(&vdf_path) {
+            // Parse VDF: look for "path" entries like  "path"  "D:\\SteamLibrary"
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("\"path\"") {
+                    if let Some(start) = trimmed.rfind('"') {
+                        let before_last = &trimmed[..start];
+                        if let Some(second) = before_last.rfind('"') {
+                            let path = before_last[second + 1..].replace("\\\\", "\\");
+                            if !library_dirs.contains(&path) {
+                                library_dirs.push(path);
+                            }
+                        }
+                    }
+                }
+            }
+            // Also add the Steam install dir itself
+            if !library_dirs.contains(&steam_path.to_string()) {
+                library_dirs.push(steam_path.to_string());
+            }
+            break; // Found a valid Steam install, stop looking
+        }
+    }
+
+    // Step 2: Also scan all drive letters for common Steam library paths
+    for drive in &['C', 'D', 'E', 'F', 'G', 'H'] {
+        for suffix in &[
+            "\\Steam",
+            "\\SteamLibrary",
+            "\\Games\\Steam",
+            "\\Games\\SteamLibrary",
+            "\\Program Files (x86)\\Steam",
+            "\\Program Files\\Steam",
+        ] {
+            let path = format!("{}:{}", drive, suffix);
+            if !library_dirs.contains(&path) && Path::new(&path).exists() {
+                library_dirs.push(path);
+            }
+        }
+    }
+
+    // Step 3: Check each library for Crimson Desert
+    for lib_dir in &library_dirs {
+        let game_path = Path::new(lib_dir)
+            .join("steamapps")
+            .join("common")
+            .join("Crimson Desert");
+        let exe = game_path.join("bin64").join("CrimsonDesert.exe");
+        if game_path.exists() && exe.exists() {
+            return Ok(Some(game_path.to_string_lossy().to_string()));
+        }
+        // Also check if the lib_dir IS the steamapps/common/Crimson Desert directly
+        let direct_exe = Path::new(lib_dir).join("bin64").join("CrimsonDesert.exe");
+        if direct_exe.exists() {
+            return Ok(Some(lib_dir.to_string()));
         }
     }
 

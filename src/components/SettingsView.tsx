@@ -1,5 +1,4 @@
-import { FolderOpen, Check, AlertCircle, HardDrive, RefreshCw, Globe, Sun, Moon } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { FolderOpen, Check, AlertCircle, HardDrive, Sun, Moon } from "lucide-react";
 
 interface SettingsViewProps {
   gamePath: string;
@@ -9,11 +8,6 @@ interface SettingsViewProps {
   onModsPathChange: (path: string) => void;
   onBrowseGamePath: () => void;
   onBrowseModsPath: () => void;
-  nexusApiKey: string;
-  onNexusApiKeyChange: (key: string) => void;
-  onCheckUpdates: () => void;
-  checkingUpdates?: boolean;
-  outdatedCount?: number;
   theme?: "dark" | "light";
   onToggleTheme?: () => void;
 }
@@ -26,9 +20,6 @@ export function SettingsView({
   onModsPathChange,
   onBrowseGamePath,
   onBrowseModsPath,
-  onCheckUpdates,
-  checkingUpdates = false,
-  outdatedCount = 0,
   theme = "dark",
   onToggleTheme,
 }: SettingsViewProps) {
@@ -119,42 +110,6 @@ export function SettingsView({
             </div>
           </div>
 
-          {/* Nexus Mods Integration */}
-          <div className="border border-border bg-surface" style={{ padding: "20px" }}>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <Globe className="w-5 h-5 text-accent" />
-                <h2 className="text-base font-semibold text-text-primary">Nexus Mods Integration</h2>
-                <span className="flex items-center gap-1 text-xs font-medium text-success bg-success-muted rounded-sm" style={{ padding: "3px 10px" }}>
-                  <Check className="w-3.5 h-3.5" /> Connected
-                </span>
-              </div>
-              <div className="flex items-center" style={{ gap: "10px" }}>
-                {outdatedCount > 0 && (
-                  <span className="text-xs font-bold text-danger bg-danger/10 border border-danger/20 rounded-sm" style={{ padding: "4px 10px" }}>
-                    {outdatedCount} update{outdatedCount !== 1 ? "s" : ""} available
-                  </span>
-                )}
-                <button
-                  onClick={onCheckUpdates}
-                  disabled={checkingUpdates}
-                  style={{ padding: "8px 16px", fontSize: "13px" }}
-                  className={cn(
-                    "flex items-center gap-2 font-medium border rounded-sm transition-all",
-                    !checkingUpdates
-                      ? "text-accent bg-accent/10 border-accent/20 hover:bg-accent/20"
-                      : "text-text-muted bg-surface-hover border-border cursor-not-allowed"
-                  )}
-                >
-                  <RefreshCw className={cn("w-4 h-4", checkingUpdates && "animate-spin")} />
-                  {checkingUpdates ? "Checking..." : "Check for Updates"}
-                </button>
-              </div>
-            </div>
-            <p className="text-sm text-text-muted" style={{ marginTop: "12px" }}>
-              Automatically checks installed mods against Nexus Mods for available updates
-            </p>
-          </div>
 
           {/* Theme */}
           <div className="border border-border bg-surface" style={{ padding: "20px" }}>
