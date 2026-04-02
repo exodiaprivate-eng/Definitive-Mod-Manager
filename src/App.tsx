@@ -1676,7 +1676,7 @@ export default function App() {
     }
   }
 
-  const activeCount = config.activeMods.length;
+  const activeCount = config.activeMods.length + activeTextures.length + activeBrowserMods.length;
 
   // Build disabled indices map for per-patch toggles
   const disabledIndicesMap: Record<string, number[]> = {};
@@ -1707,7 +1707,7 @@ export default function App() {
         <Sidebar
           activeView={view}
           onViewChange={setView}
-          modCount={mods.length}
+          modCount={mods.length + textureMods.length + browserMods.length}
           activeCount={activeCount}
           conflictCount={conflicts.length}
           asiCount={asiStatus?.plugins.length}
