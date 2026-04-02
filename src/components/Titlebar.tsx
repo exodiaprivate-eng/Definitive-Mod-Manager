@@ -17,7 +17,7 @@ export function Titlebar() {
             Definitive Mod Manager
           </span>
           <span className="text-xs text-text-secondary font-mono" data-tauri-drag-region>
-            v1.0.0
+            v1.0.1
           </span>
         </div>
 

@@ -1,6 +1,6 @@
 [package]
 name = "definitive-mod-manager"
-version = "1.0.0"
+version = "1.0.1"
 description = "Definitive Mod Manager for Crimson Desert"
 authors = ["Definitive Mod Manager"]
 license = "MIT"
