@@ -1922,21 +1922,32 @@ pub fn import_folder(source_path: String, mods_path: String) -> Result<String, S
 
 #[tauri::command]
 pub fn auto_detect_game_path() -> Result<Option<String>, String> {
-    // Step 1: Read Steam's libraryfolders.vdf to find ALL Steam library locations
-    let steam_paths = [
-        r"C:\Program Files (x86)\Steam",
-        r"C:\Program Files\Steam",
-        r"D:\Steam",
-        r"E:\Steam",
-        r"F:\Steam",
-    ];
+    let game_exe = Path::new("bin64").join("CrimsonDesert.exe");
 
+    // === STEAM ===
+    // Find Steam install roots
+    let mut steam_roots: Vec<String> = Vec::new();
+    for drive in &['C', 'D', 'E', 'F', 'G', 'H', 'I'] {
+        for suffix in &[
+            "\\Program Files (x86)\\Steam",
+            "\\Program Files\\Steam",
+            "\\Steam",
+            "\\SteamLibrary",
+            "\\Games\\Steam",
+            "\\Games\\SteamLibrary",
+        ] {
+            let path = format!("{}:{}", drive, suffix);
+            if Path::new(&path).exists() && !steam_roots.contains(&path) {
+                steam_roots.push(path);
+            }
+        }
+    }
+
+    // Parse libraryfolders.vdf from each Steam root to find all library locations
     let mut library_dirs: Vec<String> = Vec::new();
-
-    for steam_path in &steam_paths {
-        let vdf_path = Path::new(steam_path).join("steamapps").join("libraryfolders.vdf");
+    for steam_root in &steam_roots {
+        let vdf_path = Path::new(steam_root).join("steamapps").join("libraryfolders.vdf");
         if let Ok(content) = fs::read_to_string(&vdf_path) {
-            // Parse VDF: look for "path" entries like  "path"  "D:\\SteamLibrary"
             for line in content.lines() {
                 let trimmed = line.trim();
                 if trimmed.starts_with("\"path\"") {
@@ -1951,45 +1962,97 @@ pub fn auto_detect_game_path() -> Result<Option<String>, String> {
                     }
                 }
             }
-            // Also add the Steam install dir itself
-            if !library_dirs.contains(&steam_path.to_string()) {
-                library_dirs.push(steam_path.to_string());
-            }
-            break; // Found a valid Steam install, stop looking
+        }
+        if !library_dirs.contains(steam_root) {
+            library_dirs.push(steam_root.clone());
         }
     }
 
-    // Step 2: Also scan all drive letters for common Steam library paths
-    for drive in &['C', 'D', 'E', 'F', 'G', 'H'] {
-        for suffix in &[
-            "\\Steam",
-            "\\SteamLibrary",
-            "\\Games\\Steam",
-            "\\Games\\SteamLibrary",
-            "\\Program Files (x86)\\Steam",
-            "\\Program Files\\Steam",
-        ] {
-            let path = format!("{}:{}", drive, suffix);
-            if !library_dirs.contains(&path) && Path::new(&path).exists() {
-                library_dirs.push(path);
-            }
-        }
-    }
-
-    // Step 3: Check each library for Crimson Desert
+    // Check each Steam library for Crimson Desert
     for lib_dir in &library_dirs {
-        let game_path = Path::new(lib_dir)
-            .join("steamapps")
-            .join("common")
-            .join("Crimson Desert");
-        let exe = game_path.join("bin64").join("CrimsonDesert.exe");
-        if game_path.exists() && exe.exists() {
+        let game_path = Path::new(lib_dir).join("steamapps").join("common").join("Crimson Desert");
+        if game_path.join(&game_exe).exists() {
             return Ok(Some(game_path.to_string_lossy().to_string()));
         }
-        // Also check if the lib_dir IS the steamapps/common/Crimson Desert directly
-        let direct_exe = Path::new(lib_dir).join("bin64").join("CrimsonDesert.exe");
-        if direct_exe.exists() {
-            return Ok(Some(lib_dir.to_string()));
+    }
+
+    // === XBOX GAME PASS / MICROSOFT STORE ===
+    let xbox_game_names = ["Crimson Desert", "PearlAbyss.CrimsonDesert", "CrimsonDesert"];
+
+    for drive in &['C', 'D', 'E', 'F', 'G', 'H', 'I'] {
+        for name in &xbox_game_names {
+            // XboxGames folder (most common for Game Pass)
+            for sub in &["Content", ""] {
+                let mut xbox_path = format!("{}:\\XboxGames\\{}", drive, name);
+                if !sub.is_empty() {
+                    xbox_path = format!("{}\\{}", xbox_path, sub);
+                }
+                if Path::new(&xbox_path).join(&game_exe).exists() {
+                    return Ok(Some(xbox_path));
+                }
+            }
+        }
+    }
+
+    // ModifiableWindowsApps (accessible Game Pass location)
+    for base in &[
+        "C:\\Program Files\\ModifiableWindowsApps",
+        "C:\\Program Files (x86)\\ModifiableWindowsApps",
+    ] {
+        let base_path = Path::new(base);
+        if base_path.exists() {
+            if let Ok(entries) = fs::read_dir(base_path) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_lowercase();
+                    if xbox_game_names.iter().any(|n| name.contains(&n.to_lowercase())) {
+                        let path = entry.path();
+                        if path.join(&game_exe).exists() {
+                            return Ok(Some(path.to_string_lossy().to_string()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // === EPIC GAMES STORE ===
+    for drive in &['C', 'D', 'E', 'F', 'G', 'H', 'I'] {
+        for suffix in &[
+            "\\Program Files\\Epic Games\\CrimsonDesert",
+            "\\Program Files\\Epic Games\\Crimson Desert",
+            "\\Epic Games\\CrimsonDesert",
+            "\\Epic Games\\Crimson Desert",
+            "\\Games\\Epic\\CrimsonDesert",
+            "\\Games\\Epic\\Crimson Desert",
+        ] {
+            let path = format!("{}:{}", drive, suffix);
+            if Path::new(&path).join(&game_exe).exists() {
+                return Ok(Some(path));
+            }
+        }
+    }
+
+    // Also check Epic's manifests for custom install locations
+    let epic_manifests = Path::new("C:\\ProgramData\\Epic\\EpicGamesLauncher\\Data\\Manifests");
+    if epic_manifests.exists() {
+        if let Ok(entries) = fs::read_dir(epic_manifests) {
+            for entry in entries.flatten() {
+                if entry.path().extension().and_then(|e| e.to_str()) == Some("item") {
+                    if let Ok(content) = fs::read_to_string(entry.path()) {
+                        if content.to_lowercase().contains("crimson") || content.to_lowercase().contains("desert") {
+                            // Parse InstallLocation from the manifest
+                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+                                if let Some(loc) = v.get("InstallLocation").and_then(|l| l.as_str()) {
+                                    let path = Path::new(loc);
+                                    if path.join(&game_exe).exists() {
+                                        return Ok(Some(path.to_string_lossy().to_string()));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
