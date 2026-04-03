@@ -34,7 +34,7 @@ interface PatchDetail {
 
 let NEXUS_API_KEY = "";
 
-const CURRENT_VERSION = "1.0.4";
+const CURRENT_VERSION = "1.0.4b";
 const GITHUB_RELEASE_URL = "https://api.github.com/repos/exodiaprivate-eng/Definitive-Mod-Manager/releases/latest";
 
 const DEFAULT_CONFIG: AppConfig = {
@@ -178,7 +178,7 @@ export default function App() {
 
   useEffect(() => {
     async function init() {
-      addLog("Definitive Mod Manager v1.0.4 loaded", "success");
+      addLog("Definitive Mod Manager v1.0.4b loaded", "success");
 
       // Determine app directory dynamically from exe location
       let appDir = "";
@@ -589,12 +589,6 @@ export default function App() {
       setBrowserMods(entries);
       if (entries.length > 0) {
         addLog(`Found ${entries.length} file replacement mod(s)`, "info");
-        // Auto-enable newly detected browser mods (only if not already in config)
-        const current = config.activeBrowserMods || [];
-        const newOnes = entries.filter(e => e.enabled).map(e => e.folder_name).filter(f => !current.includes(f));
-        if (newOnes.length > 0) {
-          saveConfig({ ...config, activeBrowserMods: [...current, ...newOnes] });
-        }
       }
     } catch (e) {
       setBrowserMods([]);
@@ -1927,9 +1921,20 @@ export default function App() {
                 onRestoreAll={revertMods}
                 onCreateBackup={async () => {
                   try {
-                    await invoke("initialize_app", { gamePath: config.gamePath, appDir: getAppBaseDir() });
-                    toast.success("Backup created");
-                    addLog("Manual backup created", "success");
+                    const backupDir = getAppBaseDir() + "\\backups";
+                    // Back up key game files as .original for the backup manager
+                    const filesToBackup = ["meta/0.papgt", "meta/0.pathc"];
+                    let count = 0;
+                    for (const gf of filesToBackup) {
+                      try {
+                        await invoke("create_backup", { gamePath: config.gamePath, gameFile: gf, backupDir });
+                        count++;
+                      } catch {
+                        // File may not exist, skip
+                      }
+                    }
+                    toast.success(`Backup created (${count} file${count !== 1 ? "s" : ""})`);
+                    addLog(`Manual backup created: ${count} game file(s) backed up`, "success");
                     loadBackups();
                   } catch (e) {
                     toast.error(`Backup failed: ${e}`);

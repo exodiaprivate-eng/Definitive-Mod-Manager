@@ -1649,18 +1649,65 @@ pub fn revert_mods(game_path: String, backup_dir: String) -> Result<Vec<String>,
         return Err("No backups directory found".to_string());
     }
 
+    let game = Path::new(&game_path);
     let mut restored = Vec::new();
 
-    // Unmount = restore clean PAPGT (without 0036)
-    // The game ignores the 0036 folder when PAPGT doesn't reference it
+    // 1. Restore clean PAPGT (without 0036)
     let papgt_backup = backup_path.join("papgt_clean.bin");
-    let papgt_path = Path::new(&game_path).join("meta").join("0.papgt");
+    let papgt_path = game.join("meta").join("0.papgt");
     if papgt_backup.exists() {
         fs::copy(&papgt_backup, &papgt_path)
             .map_err(|e| format!("Failed to restore PAPGT: {}", e))?;
-        restored.push("Mods unmounted — PAPGT restored to clean".to_string());
+        restored.push("Restored: PAPGT restored to clean".to_string());
     } else {
         return Err("No clean PAPGT backup found. Run 'Initialize' first.".to_string());
+    }
+
+    // 2. Delete overlay PAZ/PAMT in 0036/
+    let overlay_dir = game.join("0036");
+    if overlay_dir.exists() {
+        let overlay_paz = overlay_dir.join("0.paz");
+        let overlay_pamt = overlay_dir.join("0.pamt");
+        if overlay_paz.exists() {
+            fs::remove_file(&overlay_paz).ok();
+        }
+        if overlay_pamt.exists() {
+            fs::remove_file(&overlay_pamt).ok();
+        }
+        // Remove the directory if empty
+        fs::remove_dir(&overlay_dir).ok();
+        restored.push("Restored: Overlay files (0036/) removed".to_string());
+    }
+
+    // 3. Restore any backed up game files (regular file patches)
+    if let Ok(entries) = fs::read_dir(&backup_path) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Skip our special backup files
+            if name == "papgt_clean.bin" || name == "overlay_clean.pamt" || name == "overlay_clean.paz" {
+                continue;
+            }
+            // Backup files are named after the game file they back up
+            if entry.path().is_file() && !name.starts_with('.') {
+                let game_file = game.join(&name);
+                if game_file.exists() || name.contains('.') {
+                    if fs::copy(entry.path(), &game_file).is_ok() {
+                        fs::remove_file(entry.path()).ok();
+                        restored.push(format!("Restored: {}", name));
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. Clean up PATHC texture entries if present
+    // (Texture mods register in PATHC — restoring PAPGT doesn't undo those)
+    let pathc_path = game.join("meta").join("0.pathc");
+    let pathc_backup = backup_path.join("pathc_clean.bin");
+    if pathc_backup.exists() {
+        if fs::copy(&pathc_backup, &pathc_path).is_ok() {
+            restored.push("Restored: PATHC restored to clean".to_string());
+        }
     }
 
     Ok(restored)
@@ -1751,26 +1798,64 @@ pub fn initialize_app(game_path: String, app_dir: String) -> Result<InitResult, 
         return Ok(result);
     }
 
+    // Helper: check if a PAPGT binary contains a "0036" overlay entry
+    fn papgt_has_overlay(data: &[u8]) -> bool {
+        if data.len() < 12 { return false; }
+        let entry_count = data[8] as usize;
+        let entries_end = 12 + entry_count * 12;
+        if data.len() < entries_end + 4 { return false; }
+        let names_len = u32::from_le_bytes(
+            data[entries_end..entries_end + 4].try_into().unwrap_or([0; 4])
+        ) as usize;
+        let names_start = entries_end + 4;
+        if data.len() < names_start + names_len { return false; }
+        let names_block = &data[names_start..names_start + names_len];
+        // Search for "0036\0" in the names block
+        let needle = b"0036\0";
+        names_block.windows(needle.len()).any(|w| w == needle)
+    }
+
     // Backup clean PAPGT (if not already backed up)
     let papgt_clean = backup_dir.join("papgt_clean.bin");
-    if !papgt_clean.exists() {
-        let papgt_path = game.join("meta").join("0.papgt");
-        if papgt_path.exists() {
-            fs::copy(&papgt_path, &papgt_clean)
+    let papgt_path = game.join("meta").join("0.papgt");
+
+    if !papgt_clean.exists() && papgt_path.exists() {
+        let papgt_data = fs::read(&papgt_path)
+            .map_err(|e| format!("Failed to read PAPGT: {}", e))?;
+
+        if papgt_has_overlay(&papgt_data) {
+            // Current PAPGT is NOT vanilla — it has a 0036 overlay entry
+            result.papgt_modified = true;
+            result.messages.push("PAPGT is not vanilla — it contains an overlay entry from another tool or previous mod session. Verify game files through Steam to get a clean state before using DMM.".to_string());
+            // Do NOT back this up as "clean" — it's tainted
+        } else {
+            // Vanilla PAPGT — safe to back up
+            fs::write(&papgt_clean, &papgt_data)
                 .map_err(|e| format!("Failed to backup PAPGT: {}", e))?;
             result.messages.push("Backed up clean PAPGT".to_string());
             result.backups_created = true;
         }
+    } else if papgt_clean.exists() && papgt_path.exists() {
+        // Validate the existing backup is actually vanilla
+        if let Ok(backup_data) = fs::read(&papgt_clean) {
+            if papgt_has_overlay(&backup_data) {
+                // The "clean" backup is tainted — delete it so we can get a real one
+                fs::remove_file(&papgt_clean).ok();
+                result.papgt_modified = true;
+                result.messages.push("Existing PAPGT backup was not vanilla — it has been removed. Verify game files through Steam, then restart DMM to create a proper clean backup.".to_string());
+            }
+        }
     }
 
-    // Detect if PAPGT has been modified by another tool
-    let papgt_path = game.join("meta").join("0.papgt");
-    if papgt_clean.exists() && papgt_path.exists() {
-        if let (Ok(clean), Ok(current)) = (fs::read(&papgt_clean), fs::read(&papgt_path)) {
-            if clean != current {
-                result.papgt_modified = true;
-                result.messages.push("PAPGT has been modified — another tool or leftover mods may be active. Consider unmounting or verifying game files.".to_string());
-            }
+    // Backup clean PATHC (if not already backed up)
+    let pathc_clean = backup_dir.join("pathc_clean.bin");
+    if !pathc_clean.exists() {
+        let pathc_path = game.join("meta").join("0.pathc");
+        if pathc_path.exists() {
+            fs::copy(&pathc_path, &pathc_clean)
+                .map_err(|e| format!("Failed to backup PATHC: {}", e))?;
+            result.messages.push("Backed up clean PATHC".to_string());
+            result.backups_created = true;
         }
     }
 
@@ -2859,6 +2944,14 @@ pub fn list_backups(backup_dir: String) -> Result<Vec<BackupInfo>, String> {
             Some(n) if n.ends_with(".original") => n.to_string(),
             _ => continue,
         };
+
+        // Skip internal DMM files that aren't user-facing backups
+        let lower = name.to_lowercase();
+        if lower.contains("papgt_clean") || lower.contains("pathc_clean")
+            || lower.contains("overlay_clean") || lower.contains("_clean.bin")
+            || lower.contains("ref_multi") {
+            continue;
+        }
 
         let game_file = name
             .trim_end_matches(".original")

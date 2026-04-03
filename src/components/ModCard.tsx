@@ -2,13 +2,13 @@ import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
 import {
   FileCode2,
-  User,
   ChevronDown,
   ChevronUp,
   AlertTriangle,
   GripVertical,
   ExternalLink,
   Trash2,
+  Check,
 } from "lucide-react";
 import { useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -113,7 +113,7 @@ export function ModCard({ mod, index, onToggle, dragHandleProps, disabledIndices
           : "bg-border/30 group-hover:bg-text-muted/30"
       )} />
 
-      <div className="flex items-center gap-5 pl-6 pr-5 py-5">
+      <div className="flex items-center gap-4 pr-5 py-5" style={{ paddingLeft: "20px" }}>
         {/* Drag handle */}
         <div
           {...dragHandleProps}
@@ -122,38 +122,24 @@ export function ModCard({ mod, index, onToggle, dragHandleProps, disabledIndices
           <GripVertical className="w-5 h-5" />
         </div>
 
-        {/* Load order number */}
-        <div className={cn(
-          "w-8 h-8 rounded-sm flex items-center justify-center text-xs font-bold shrink-0 transition-all",
-          mod.enabled
-            ? "bg-accent/20 text-accent border border-accent/20"
-            : "bg-white/[0.03] text-text-muted border border-border/40"
-        )}>
-          {index + 1}
-        </div>
-
-        {/* Toggle switch */}
+        {/* Checkbox */}
         <button
           onClick={() => onToggle(mod.file_name)}
           className={cn(
-            "relative w-12 h-6 rounded-full transition-all duration-300 shrink-0",
-            mod.enabled
-              ? "bg-accent shadow-[0_0_12px_rgba(99,102,241,0.5),inset_0_1px_2px_rgba(0,0,0,0.2)]"
-              : "bg-white/[0.06] shadow-[inset_0_1px_3px_rgba(0,0,0,0.3)]"
+            "w-5 h-5 rounded-sm border flex items-center justify-center shrink-0 transition-all",
+            mod.enabled ? "bg-accent border-accent" : "border-border/60 bg-transparent"
           )}
         >
-          <motion.div
-            className={cn(
-              "absolute top-1 w-4 h-4 rounded-full shadow-md",
-              mod.enabled ? "bg-white" : "bg-text-muted"
-            )}
-            animate={{ left: mod.enabled ? 28 : 4 }}
-            transition={{ type: "spring", stiffness: 500, damping: 30 }}
-          />
+          {mod.enabled && <Check className="w-3.5 h-3.5 text-white" />}
         </button>
 
+        {/* Icon */}
+        <div className="w-8 h-8 rounded-sm flex items-center justify-center bg-white/[0.03] border border-border/40 shrink-0">
+          <FileCode2 className={cn("w-4 h-4", mod.enabled ? "text-accent" : "text-text-muted")} />
+        </div>
+
         {/* Info */}
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0" style={{ marginLeft: "4px" }}>
           <div className="flex items-center gap-3">
             {thumbnailPath && (
               <img
@@ -168,77 +154,73 @@ export function ModCard({ mod, index, onToggle, dragHandleProps, disabledIndices
             )}>
               {mod.title}
             </h3>
-            {/* Version badge - colored by update status */}
-            <span className={cn(
-              "text-xs font-mono shrink-0 border rounded-sm",
-              updateStatus && !updateStatus.error
-                ? updateStatus.is_outdated
-                  ? "text-danger bg-danger/10 border-danger/25"
-                  : "text-success bg-success/10 border-success/25"
-                : mod.enabled
-                  ? "text-accent/80 bg-accent/10 border-accent/15"
-                  : "text-text-muted bg-white/[0.02] border-border/40"
-            )} style={{ padding: "3px 10px" }}>
-              v{mod.version}
-            </span>
-            {updateStatus && !updateStatus.error && (
-              updateStatus.is_outdated ? (
-                <span className="flex items-center gap-1.5 shrink-0">
-                  <span className="text-xs font-medium text-danger" style={{ padding: "3px 0" }}>
-                    Outdated — latest: v{updateStatus.nexus_version}
-                  </span>
-                  {updateStatus.nexus_url && (
-                    <button
-                      className="flex items-center gap-1 text-xs font-medium text-accent hover:text-accent-hover transition-colors"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        window.open(updateStatus.nexus_url!, "_blank");
-                      }}
-                    >
-                      <ExternalLink className="w-3.5 h-3.5" />
-                      Open on Nexus
-                    </button>
-                  )}
-                </span>
-              ) : (
-                <span className="text-xs font-medium text-success" style={{ padding: "3px 0" }}>
-                  Up to date
-                </span>
-              )
+            {/* Version badge */}
+            {mod.version && (
+              <span className={cn(
+                "text-xs font-mono shrink-0 border rounded-sm",
+                updateStatus && !updateStatus.error
+                  ? updateStatus.is_outdated
+                    ? "text-danger bg-danger/10 border-danger/25"
+                    : "text-success bg-success/10 border-success/25"
+                  : mod.enabled
+                    ? "text-accent/80 bg-accent/10 border-accent/15"
+                    : "text-text-muted bg-white/[0.02] border-border/40"
+              )} style={{ padding: "3px 10px" }}>
+                v{mod.version}
+              </span>
             )}
-            {updateStatus && updateStatus.error && (
-              <span className="text-xs font-medium text-text-muted" style={{ padding: "3px 0" }}>
-                Update status unknown
+            {updateStatus && !updateStatus.error && updateStatus.is_outdated && (
+              <span className="flex items-center gap-1.5 shrink-0">
+                <span className="text-xs font-medium text-danger">
+                  Outdated — latest: v{updateStatus.nexus_version}
+                </span>
+                {updateStatus.nexus_url && (
+                  <button
+                    className="flex items-center gap-1 text-xs font-medium text-accent hover:text-accent-hover transition-colors"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      window.open(updateStatus.nexus_url!, "_blank");
+                    }}
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    Open on Nexus
+                  </button>
+                )}
               </span>
             )}
             {mod.has_conflicts && (
               <AlertTriangle className="w-4 h-4 text-warning shrink-0 drop-shadow-[0_0_4px_rgba(245,158,11,0.5)]" />
             )}
           </div>
-          <div className="flex items-center gap-5 mt-2">
-            <span className="flex items-center gap-2 text-sm text-text-muted">
-              <User className="w-3.5 h-3.5" />
-              {mod.author}
+          <div className="flex items-center gap-5 mt-1.5">
+            <span className="text-sm text-text-muted">
+              by {mod.author}
             </span>
-            <span className="flex items-center gap-2 text-sm text-text-muted">
-              <FileCode2 className="w-3.5 h-3.5" />
-              {mod.patch_count} patches
+            <span className="text-sm text-text-muted">
+              <span className={cn("font-semibold", mod.enabled ? "text-accent" : "text-text-secondary")}>{mod.patch_count}</span> patch{mod.patch_count !== 1 ? "es" : ""}
             </span>
-            <span className="text-[11px] font-mono bg-white/[0.03] text-text-muted/70 px-2.5 py-0.5 rounded-sm border border-border/30">
-              json patch
-            </span>
-            {mod.enabled && isMounted !== undefined && (
-              isMounted ? (
-                <span className="text-xs font-medium text-success border border-success/25 bg-success/10 rounded-sm" style={{ padding: "2px 8px" }}>
-                  Mounted
-                </span>
-              ) : (
-                <span className="text-xs font-medium text-warning border border-warning/25 bg-warning/10 rounded-sm" style={{ padding: "2px 8px" }}>
-                  Not Mounted
-                </span>
-              )
+            {mod.description && (
+              <span className="text-xs text-text-muted/70 truncate">{mod.description}</span>
             )}
           </div>
+        </div>
+
+        {/* Type + mount badges */}
+        <div className="flex items-center gap-2 shrink-0">
+          <span className="text-[11px] font-mono bg-white/[0.03] text-text-muted px-2.5 py-1 rounded-sm border border-border/30">
+            json patch
+          </span>
+          {mod.enabled && isMounted !== undefined && (
+            isMounted ? (
+              <span className="text-[11px] font-mono text-success bg-success/10 px-2.5 py-1 rounded-sm border border-success/25">
+                mounted
+              </span>
+            ) : (
+              <span className="text-[11px] font-mono text-warning bg-warning/10 px-2.5 py-1 rounded-sm border border-warning/25">
+                not mounted
+              </span>
+            )
+          )}
         </div>
 
         {/* Delete */}

@@ -372,8 +372,17 @@ export function ModList({
                           : "bg-surface/80 border-border/60 hover:border-border-hover"
                       )}
                       onClick={() => {
-                        onToggleTexture?.(texture.folder_name);
-                        onToggleBrowserMod?.(browser.folder_name);
+                        // Sync both to the same state: if either is on, turn both off; if both off, turn both on
+                        const anyEnabled = texEnabled || browserEnabled;
+                        if (anyEnabled) {
+                          // Turn off whichever is on
+                          if (texEnabled) onToggleTexture?.(texture.folder_name);
+                          if (browserEnabled) onToggleBrowserMod?.(browser.folder_name);
+                        } else {
+                          // Turn both on
+                          onToggleTexture?.(texture.folder_name);
+                          onToggleBrowserMod?.(browser.folder_name);
+                        }
                       }}
                     >
                       <div className={cn(

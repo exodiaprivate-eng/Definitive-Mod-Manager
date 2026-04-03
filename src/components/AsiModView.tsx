@@ -1,6 +1,6 @@
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
-import { Plug, Settings2, Trash2, Download, AlertTriangle, Check, RefreshCw, GripVertical } from "lucide-react";
+import { Plug, Settings2, Trash2, Download, AlertTriangle, Check, RefreshCw } from "lucide-react";
 import type { AsiStatus } from "@/types";
 
 interface AsiModViewProps {
@@ -111,53 +111,38 @@ export function AsiModView({
                 exit={{ opacity: 0, y: -8 }}
                 transition={{ duration: 0.2 }}
                 className={cn(
-                  "group rounded-sm border relative overflow-hidden transition-all",
+                  "group rounded-sm border relative overflow-hidden transition-all cursor-pointer",
                   plugin.enabled
-                    ? "bg-gradient-to-r from-accent/10 via-surface to-surface border-accent/25 shadow-[0_0_25px_rgba(99,102,241,0.08)]"
+                    ? "bg-accent/[0.03] border-accent/30 hover:border-accent/50"
                     : "bg-surface/80 border-border/60 hover:border-border-hover"
                 )}
+                onClick={() => plugin.enabled ? onDisable(plugin.name) : onEnable(plugin.name)}
               >
                 {/* Left accent bar */}
                 <div className={cn(
                   "absolute left-0 top-0 bottom-0 w-1 transition-all duration-300",
-                  plugin.enabled
-                    ? "bg-gradient-to-b from-accent to-purple-500 shadow-[0_0_8px_rgba(99,102,241,0.5)]"
-                    : "bg-border/30 group-hover:bg-text-muted/30"
+                  plugin.enabled ? "bg-accent/70" : "bg-border/30 group-hover:bg-accent/50"
                 )} />
 
-                <div className="flex items-center gap-5 pl-6 pr-5 py-5">
-                  {/* Load order number */}
-                  <div className={cn(
-                    "w-8 h-8 rounded-sm flex items-center justify-center text-xs font-bold shrink-0 transition-all",
-                    plugin.enabled
-                      ? "bg-accent/20 text-accent border border-accent/20"
-                      : "bg-white/[0.03] text-text-muted border border-border/40"
-                  )}>
-                    {index + 1}
-                  </div>
-
-                  {/* Toggle switch */}
+                <div className="flex items-center gap-4 pr-5 py-5" style={{ paddingLeft: "20px" }}>
+                  {/* Checkbox */}
                   <button
                     onClick={() => plugin.enabled ? onDisable(plugin.name) : onEnable(plugin.name)}
                     className={cn(
-                      "relative w-12 h-6 rounded-full transition-all duration-300 shrink-0",
-                      plugin.enabled
-                        ? "bg-accent shadow-[0_0_12px_rgba(99,102,241,0.5),inset_0_1px_2px_rgba(0,0,0,0.2)]"
-                        : "bg-white/[0.06] shadow-[inset_0_1px_3px_rgba(0,0,0,0.3)]"
+                      "w-5 h-5 rounded-sm border flex items-center justify-center shrink-0 transition-all",
+                      plugin.enabled ? "bg-accent border-accent" : "border-border/60 bg-transparent"
                     )}
                   >
-                    <motion.div
-                      className={cn(
-                        "absolute top-1 w-4 h-4 rounded-full shadow-md",
-                        plugin.enabled ? "bg-white" : "bg-text-muted"
-                      )}
-                      animate={{ left: plugin.enabled ? 28 : 4 }}
-                      transition={{ type: "spring", stiffness: 500, damping: 30 }}
-                    />
+                    {plugin.enabled && <Check className="w-3.5 h-3.5 text-white" />}
                   </button>
 
+                  {/* Icon */}
+                  <div className="w-8 h-8 rounded-sm flex items-center justify-center bg-white/[0.03] border border-border/40 shrink-0">
+                    <Plug className={cn("w-4 h-4", plugin.enabled ? "text-accent" : "text-text-muted")} />
+                  </div>
+
                   {/* Info */}
-                  <div className="flex-1 min-w-0">
+                  <div className="flex-1 min-w-0" style={{ marginLeft: "4px" }}>
                     <div className="flex items-center gap-3">
                       <h3 className={cn(
                         "text-base font-semibold truncate transition-colors",
@@ -165,27 +150,9 @@ export function AsiModView({
                       )}>
                         {plugin.name}
                       </h3>
-                      <span className={cn(
-                        "text-[11px] font-mono px-2.5 py-0.5 rounded-sm border",
-                        plugin.enabled
-                          ? "bg-accent/10 text-accent/80 border-accent/15"
-                          : "bg-white/[0.02] text-text-muted border-border/40"
-                      )}>
-                        {plugin.file_name.toLowerCase().endsWith(".asi") ? "asi" : "dll"}
-                      </span>
-                      {plugin.enabled ? (
-                        <span className="text-xs font-medium text-success border border-success/25 bg-success/10 rounded-sm" style={{ padding: "2px 8px" }}>
-                          Active
-                        </span>
-                      ) : (
-                        <span className="text-xs font-medium text-text-muted border border-border/30 bg-white/[0.02] rounded-sm" style={{ padding: "2px 8px" }}>
-                          Disabled
-                        </span>
-                      )}
                     </div>
-                    <div className="flex items-center gap-5 mt-2">
-                      <span className="flex items-center gap-2 text-sm text-text-muted">
-                        <Plug className="w-3.5 h-3.5" />
+                    <div className="flex items-center gap-5 mt-1.5">
+                      <span className="text-sm text-text-muted">
                         {plugin.file_name}
                       </span>
                       {plugin.has_ini && (
@@ -195,6 +162,11 @@ export function AsiModView({
                       )}
                     </div>
                   </div>
+
+                  {/* Type badge */}
+                  <span className="text-[11px] font-mono bg-white/[0.03] text-text-muted px-2.5 py-1 rounded-sm border border-border/30">
+                    {plugin.file_name.toLowerCase().endsWith(".asi") ? "asi" : "dll"}
+                  </span>
 
                   {/* Actions */}
                   {plugin.has_ini && (

@@ -71,6 +71,20 @@ const features = [
 
 const changelog = [
   {
+    version: "1.0.4b",
+    date: "April 2026",
+    title: "Hotfix — Card Style, Unmount & Backup Fixes",
+    changes: [
+      "Unified card style across all mod types — JSON, ASI, texture, and archive mods now use matching checkbox cards",
+      "Fixed texture/archive mods auto-enabling on startup — mods now only activate when the user toggles them",
+      "Clean unmount — removes overlay files (0036/), restores PATHC, and deletes patched game files on unmount",
+      "PAPGT validation — detects tainted backups with overlay entries and removes them automatically",
+      "PATHC backed up on first run for clean restore on unmount",
+      "Manual backup now creates visible .original files in the Backup Manager",
+      "Backup list no longer shows internal DMM files (papgt_clean.bin, etc.)",
+    ],
+  },
+  {
     version: "1.0.4",
     date: "April 2026",
     title: "Merged Mod Cards, PAPGT Detection & UI Cleanup",
