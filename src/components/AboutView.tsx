@@ -71,6 +71,18 @@ const features = [
 
 const changelog = [
   {
+    version: "1.0.4",
+    date: "April 2026",
+    title: "Merged Mod Cards, PAPGT Detection & UI Cleanup",
+    changes: [
+      "Merged mod cards — texture and archive/file mods from the same folder now display as a single card with both type badges",
+      "PAPGT modification detection — warns on startup if game files were modified by another tool",
+      "ReShade moved to the Manage section in the sidebar for easier access",
+      "Removed Snapshots section — config auto-saves and restores mod state on every change",
+      "Unified mod section header: Texture, Archive & File Mods combined into one list",
+    ],
+  },
+  {
     version: "1.0.3",
     date: "April 2026",
     title: "ASI Improvements, UI Polish & Safety",

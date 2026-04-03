@@ -1675,6 +1675,7 @@ pub struct InitResult {
     pub backups_created: bool,
     pub messages: Vec<String>,
     pub program_files_warning: bool,
+    pub papgt_modified: bool,
 }
 
 #[tauri::command]
@@ -1713,6 +1714,7 @@ pub fn initialize_app(game_path: String, app_dir: String) -> Result<InitResult, 
         backups_created: false,
         messages: Vec::new(),
         program_files_warning: false,
+        papgt_modified: false,
     };
 
     let app_path = Path::new(&app_dir);
@@ -1758,6 +1760,17 @@ pub fn initialize_app(game_path: String, app_dir: String) -> Result<InitResult, 
                 .map_err(|e| format!("Failed to backup PAPGT: {}", e))?;
             result.messages.push("Backed up clean PAPGT".to_string());
             result.backups_created = true;
+        }
+    }
+
+    // Detect if PAPGT has been modified by another tool
+    let papgt_path = game.join("meta").join("0.papgt");
+    if papgt_clean.exists() && papgt_path.exists() {
+        if let (Ok(clean), Ok(current)) = (fs::read(&papgt_clean), fs::read(&papgt_path)) {
+            if clean != current {
+                result.papgt_modified = true;
+                result.messages.push("PAPGT has been modified — another tool or leftover mods may be active. Consider unmounting or verifying game files.".to_string());
+            }
         }
     }
 

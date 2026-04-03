@@ -319,136 +319,228 @@ export function ModList({
           </DragDropContext>
         )}
 
-        {/* Texture Mods */}
-        {textureMods.length > 0 && (
-          <div style={{ marginTop: "24px" }}>
-            <p className="text-xs font-bold uppercase tracking-[0.15em] text-text-muted/60 mb-4 flex items-center gap-2">
-              <Image className="w-4 h-4" />
-              Texture Mods ({textureMods.length})
-            </p>
-            <div className="space-y-3">
-              {textureMods.map((mod) => {
-                const enabled = activeTextures.includes(mod.folder_name);
-                return (
-                  <div
-                    key={mod.folder_name}
-                    className={cn(
-                      "group rounded-sm border relative overflow-hidden transition-all cursor-pointer",
-                      enabled
-                        ? "bg-accent/[0.03] border-accent/30 hover:border-accent/50"
-                        : "bg-surface/80 border-border/60 hover:border-border-hover"
-                    )}
-                    onClick={() => onToggleTexture?.(mod.folder_name)}
-                  >
-                    <div className={cn(
-                      "absolute left-0 top-0 bottom-0 w-1 transition-all duration-300",
-                      enabled ? "bg-accent/70" : "bg-border/30 group-hover:bg-accent/50"
-                    )} />
+        {/* Non-JSON Mods: merge texture + browser mods that share the same folder */}
+        {(() => {
+          // Normalize folder name for matching: lowercase, replace underscores with spaces
+          const normalize = (name: string) => name.toLowerCase().replace(/_/g, " ").trim();
 
-                    <div className="flex items-center gap-4 pr-5 py-5" style={{ paddingLeft: "20px" }}>
-                      <div
-                        className={cn(
-                          "w-5 h-5 rounded-sm border flex items-center justify-center shrink-0 transition-all",
-                          enabled ? "bg-accent border-accent" : "border-border/60 bg-transparent"
-                        )}
-                      >
-                        {enabled && <Check className="w-3.5 h-3.5 text-white" />}
-                      </div>
+          // Build lookup maps
+          const textureByNorm = new Map<string, typeof textureMods[0]>();
+          for (const t of textureMods) {
+            textureByNorm.set(normalize(t.folder_name), t);
+          }
+          const browserByNorm = new Map<string, typeof browserMods[0]>();
+          for (const b of browserMods) {
+            browserByNorm.set(normalize(b.folder_name), b);
+          }
 
-                      <div className="w-8 h-8 rounded-sm flex items-center justify-center bg-white/[0.03] border border-border/40 shrink-0">
-                        <Image className={cn("w-4 h-4", enabled ? "text-accent" : "text-text-muted")} />
-                      </div>
+          // Find combined mods (same normalized name in both)
+          const combinedKeys = new Set<string>();
+          for (const key of textureByNorm.keys()) {
+            if (browserByNorm.has(key)) combinedKeys.add(key);
+          }
 
-                      <div className="flex-1 min-w-0" style={{ marginLeft: "4px" }}>
-                        <h3 className={cn("text-base font-semibold truncate", enabled ? "text-text-primary" : "text-text-secondary")}>
-                          {mod.name}
-                        </h3>
-                        <p className="text-sm text-text-muted mt-1">
-                          <span className={cn("font-semibold", enabled ? "text-accent" : "text-text-secondary")}>{mod.dds_count}</span> DDS texture{mod.dds_count !== 1 ? "s" : ""}
-                        </p>
-                      </div>
+          const combinedMods = Array.from(combinedKeys).map((key) => ({
+            texture: textureByNorm.get(key)!,
+            browser: browserByNorm.get(key)!,
+          }));
+          const standaloneTextures = textureMods.filter((t) => !combinedKeys.has(normalize(t.folder_name)));
+          const standaloneBrowser = browserMods.filter((b) => !combinedKeys.has(normalize(b.folder_name)));
+          const totalNonJson = combinedMods.length + standaloneTextures.length + standaloneBrowser.length;
 
-                      <span className="text-[11px] font-mono bg-white/[0.03] text-text-muted px-2.5 py-1 rounded-sm border border-border/30">
-                        texture
-                      </span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
+          if (totalNonJson === 0) return null;
 
-        {/* Archive & File Replacement Mods */}
-        {browserMods.length > 0 && (
-          <div style={{ marginTop: "24px" }}>
-            <p className="text-xs font-bold uppercase tracking-[0.15em] text-text-muted/60 mb-4 flex items-center gap-2">
-              <Puzzle className="w-4 h-4" />
-              Archive &amp; File Mods ({browserMods.length})
-            </p>
-            <div className="space-y-3">
-              {browserMods.map((mod) => {
-                const enabled = activeBrowserMods.includes(mod.folder_name);
-                return (
-                  <div
-                    key={mod.folder_name}
-                    className={cn(
-                      "group rounded-sm border relative overflow-hidden transition-all cursor-pointer",
-                      enabled
-                        ? "bg-accent/[0.03] border-accent/30 hover:border-accent/50"
-                        : "bg-surface/80 border-border/60 hover:border-border-hover"
-                    )}
-                    onClick={() => onToggleBrowserMod?.(mod.folder_name)}
-                  >
-                    <div className={cn(
-                      "absolute left-0 top-0 bottom-0 w-1 transition-all duration-300",
-                      enabled ? "bg-accent/70" : "bg-border/30 group-hover:bg-accent/50"
-                    )} />
+          return (
+            <div style={{ marginTop: "24px" }}>
+              <p className="text-xs font-bold uppercase tracking-[0.15em] text-text-muted/60 mb-4 flex items-center gap-2">
+                <Puzzle className="w-4 h-4" />
+                Texture, Archive &amp; File Mods ({totalNonJson})
+              </p>
+              <div className="space-y-3">
+                {/* Combined cards */}
+                {combinedMods.map(({ texture, browser }) => {
+                  const texEnabled = activeTextures.includes(texture.folder_name);
+                  const browserEnabled = activeBrowserMods.includes(browser.folder_name);
+                  const enabled = texEnabled || browserEnabled;
+                  return (
+                    <div
+                      key={`combined-${texture.folder_name}`}
+                      className={cn(
+                        "group rounded-sm border relative overflow-hidden transition-all cursor-pointer",
+                        enabled
+                          ? "bg-accent/[0.03] border-accent/30 hover:border-accent/50"
+                          : "bg-surface/80 border-border/60 hover:border-border-hover"
+                      )}
+                      onClick={() => {
+                        onToggleTexture?.(texture.folder_name);
+                        onToggleBrowserMod?.(browser.folder_name);
+                      }}
+                    >
+                      <div className={cn(
+                        "absolute left-0 top-0 bottom-0 w-1 transition-all duration-300",
+                        enabled ? "bg-accent/70" : "bg-border/30 group-hover:bg-accent/50"
+                      )} />
 
-                    <div className="flex items-center gap-4 pr-5 py-5" style={{ paddingLeft: "20px" }}>
-                      <div
-                        className={cn(
-                          "w-5 h-5 rounded-sm border flex items-center justify-center shrink-0 transition-all",
-                          enabled ? "bg-accent border-accent" : "border-border/60 bg-transparent"
-                        )}
-                      >
-                        {enabled && <Check className="w-3.5 h-3.5 text-white" />}
-                      </div>
-
-                      <div className="w-8 h-8 rounded-sm flex items-center justify-center bg-white/[0.03] border border-border/40 shrink-0">
-                        <Puzzle className={cn("w-4 h-4", enabled ? "text-accent" : "text-text-muted")} />
-                      </div>
-
-                      <div className="flex-1 min-w-0" style={{ marginLeft: "4px" }}>
-                        <h3 className={cn("text-base font-semibold truncate", enabled ? "text-text-primary" : "text-text-secondary")}>
-                          {mod.title}
-                        </h3>
-                        <div className="flex items-center gap-5 mt-1.5">
-                          <span className="text-sm text-text-muted">
-                            by {mod.author}
-                          </span>
-                          {mod.version && (
-                            <span className="text-sm text-text-muted">v{mod.version}</span>
+                      <div className="flex items-center gap-4 pr-5 py-5" style={{ paddingLeft: "20px" }}>
+                        <div
+                          className={cn(
+                            "w-5 h-5 rounded-sm border flex items-center justify-center shrink-0 transition-all",
+                            enabled ? "bg-accent border-accent" : "border-border/60 bg-transparent"
                           )}
-                          <span className="text-sm text-text-muted">
-                            <span className={cn("font-semibold", enabled ? "text-accent" : "text-text-secondary")}>{mod.file_count}</span> file{mod.file_count !== 1 ? "s" : ""}
+                        >
+                          {enabled && <Check className="w-3.5 h-3.5 text-white" />}
+                        </div>
+
+                        <div className="w-8 h-8 rounded-sm flex items-center justify-center bg-white/[0.03] border border-border/40 shrink-0">
+                          <Puzzle className={cn("w-4 h-4", enabled ? "text-accent" : "text-text-muted")} />
+                        </div>
+
+                        <div className="flex-1 min-w-0" style={{ marginLeft: "4px" }}>
+                          <h3 className={cn("text-base font-semibold truncate", enabled ? "text-text-primary" : "text-text-secondary")}>
+                            {browser.title}
+                          </h3>
+                          <div className="flex items-center gap-5 mt-1.5">
+                            {browser.author && browser.author !== "Unknown" && (
+                              <span className="text-sm text-text-muted">by {browser.author}</span>
+                            )}
+                            {browser.version && (
+                              <span className="text-sm text-text-muted">v{browser.version}</span>
+                            )}
+                            <span className="text-sm text-text-muted">
+                              <span className={cn("font-semibold", enabled ? "text-accent" : "text-text-secondary")}>{texture.dds_count}</span> DDS texture{texture.dds_count !== 1 ? "s" : ""}
+                            </span>
+                            <span className="text-sm text-text-muted">
+                              <span className={cn("font-semibold", enabled ? "text-accent" : "text-text-secondary")}>{browser.file_count}</span> file{browser.file_count !== 1 ? "s" : ""}
+                            </span>
+                          </div>
+                          {browser.description && (
+                            <p className="text-xs text-text-muted/70 mt-1.5 truncate">{browser.description}</p>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <span className="text-[11px] font-mono bg-white/[0.03] text-text-muted px-2.5 py-1 rounded-sm border border-border/30">
+                            texture
+                          </span>
+                          <span className="text-[11px] font-mono bg-white/[0.03] text-text-muted px-2.5 py-1 rounded-sm border border-border/30">
+                            {browser.mod_type}
                           </span>
                         </div>
-                        {mod.description && (
-                          <p className="text-xs text-text-muted/70 mt-1.5 truncate">{mod.description}</p>
-                        )}
                       </div>
-
-                      <span className="text-[11px] font-mono bg-white/[0.03] text-text-muted px-2.5 py-1 rounded-sm border border-border/30">
-                        {mod.mod_type}
-                      </span>
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
+
+                {/* Standalone texture mods */}
+                {standaloneTextures.map((mod) => {
+                  const enabled = activeTextures.includes(mod.folder_name);
+                  return (
+                    <div
+                      key={mod.folder_name}
+                      className={cn(
+                        "group rounded-sm border relative overflow-hidden transition-all cursor-pointer",
+                        enabled
+                          ? "bg-accent/[0.03] border-accent/30 hover:border-accent/50"
+                          : "bg-surface/80 border-border/60 hover:border-border-hover"
+                      )}
+                      onClick={() => onToggleTexture?.(mod.folder_name)}
+                    >
+                      <div className={cn(
+                        "absolute left-0 top-0 bottom-0 w-1 transition-all duration-300",
+                        enabled ? "bg-accent/70" : "bg-border/30 group-hover:bg-accent/50"
+                      )} />
+
+                      <div className="flex items-center gap-4 pr-5 py-5" style={{ paddingLeft: "20px" }}>
+                        <div className={cn(
+                          "w-5 h-5 rounded-sm border flex items-center justify-center shrink-0 transition-all",
+                          enabled ? "bg-accent border-accent" : "border-border/60 bg-transparent"
+                        )}>
+                          {enabled && <Check className="w-3.5 h-3.5 text-white" />}
+                        </div>
+
+                        <div className="w-8 h-8 rounded-sm flex items-center justify-center bg-white/[0.03] border border-border/40 shrink-0">
+                          <Image className={cn("w-4 h-4", enabled ? "text-accent" : "text-text-muted")} />
+                        </div>
+
+                        <div className="flex-1 min-w-0" style={{ marginLeft: "4px" }}>
+                          <h3 className={cn("text-base font-semibold truncate", enabled ? "text-text-primary" : "text-text-secondary")}>
+                            {mod.name}
+                          </h3>
+                          <p className="text-sm text-text-muted mt-1">
+                            <span className={cn("font-semibold", enabled ? "text-accent" : "text-text-secondary")}>{mod.dds_count}</span> DDS texture{mod.dds_count !== 1 ? "s" : ""}
+                          </p>
+                        </div>
+
+                        <span className="text-[11px] font-mono bg-white/[0.03] text-text-muted px-2.5 py-1 rounded-sm border border-border/30">
+                          texture
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {/* Standalone browser/archive mods */}
+                {standaloneBrowser.map((mod) => {
+                  const enabled = activeBrowserMods.includes(mod.folder_name);
+                  return (
+                    <div
+                      key={mod.folder_name}
+                      className={cn(
+                        "group rounded-sm border relative overflow-hidden transition-all cursor-pointer",
+                        enabled
+                          ? "bg-accent/[0.03] border-accent/30 hover:border-accent/50"
+                          : "bg-surface/80 border-border/60 hover:border-border-hover"
+                      )}
+                      onClick={() => onToggleBrowserMod?.(mod.folder_name)}
+                    >
+                      <div className={cn(
+                        "absolute left-0 top-0 bottom-0 w-1 transition-all duration-300",
+                        enabled ? "bg-accent/70" : "bg-border/30 group-hover:bg-accent/50"
+                      )} />
+
+                      <div className="flex items-center gap-4 pr-5 py-5" style={{ paddingLeft: "20px" }}>
+                        <div className={cn(
+                          "w-5 h-5 rounded-sm border flex items-center justify-center shrink-0 transition-all",
+                          enabled ? "bg-accent border-accent" : "border-border/60 bg-transparent"
+                        )}>
+                          {enabled && <Check className="w-3.5 h-3.5 text-white" />}
+                        </div>
+
+                        <div className="w-8 h-8 rounded-sm flex items-center justify-center bg-white/[0.03] border border-border/40 shrink-0">
+                          <Puzzle className={cn("w-4 h-4", enabled ? "text-accent" : "text-text-muted")} />
+                        </div>
+
+                        <div className="flex-1 min-w-0" style={{ marginLeft: "4px" }}>
+                          <h3 className={cn("text-base font-semibold truncate", enabled ? "text-text-primary" : "text-text-secondary")}>
+                            {mod.title}
+                          </h3>
+                          <div className="flex items-center gap-5 mt-1.5">
+                            {mod.author && mod.author !== "Unknown" && (
+                              <span className="text-sm text-text-muted">by {mod.author}</span>
+                            )}
+                            {mod.version && (
+                              <span className="text-sm text-text-muted">v{mod.version}</span>
+                            )}
+                            <span className="text-sm text-text-muted">
+                              <span className={cn("font-semibold", enabled ? "text-accent" : "text-text-secondary")}>{mod.file_count}</span> file{mod.file_count !== 1 ? "s" : ""}
+                            </span>
+                          </div>
+                          {mod.description && (
+                            <p className="text-xs text-text-muted/70 mt-1.5 truncate">{mod.description}</p>
+                          )}
+                        </div>
+
+                        <span className="text-[11px] font-mono bg-white/[0.03] text-text-muted px-2.5 py-1 rounded-sm border border-border/30">
+                          {mod.mod_type}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
       </div>
     </div>
   );

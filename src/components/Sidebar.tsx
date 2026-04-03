@@ -12,13 +12,12 @@ import {
   Plug,
   Paintbrush,
   Package,
-  Camera,
   Hammer,
   Grid3x3,
   Users,
 } from "lucide-react";
 
-export type View = "mods" | "conflicts" | "compatibility" | "language" | "asi" | "reshade" | "profiles" | "packs" | "community" | "creator" | "snapshots" | "backups" | "settings" | "about";
+export type View = "mods" | "conflicts" | "compatibility" | "language" | "asi" | "reshade" | "profiles" | "packs" | "community" | "creator" | "backups" | "settings" | "about";
 
 interface SidebarProps {
   activeView: View;
@@ -100,6 +99,12 @@ export function Sidebar({ activeView, onViewChange, modCount, activeCount, confl
               badge={asiCount}
             />
             <NavItem
+              icon={<Paintbrush className="w-[22px] h-[22px]" />}
+              label="ReShade"
+              active={activeView === "reshade"}
+              onClick={() => onViewChange("reshade")}
+            />
+            <NavItem
               icon={<AlertTriangle className="w-[22px] h-[22px]" />}
               label="Conflicts"
               active={activeView === "conflicts"}
@@ -152,18 +157,6 @@ export function Sidebar({ activeView, onViewChange, modCount, activeCount, confl
             System
           </p>
           <div className="space-y-1">
-            <NavItem
-              icon={<Paintbrush className="w-[22px] h-[22px]" />}
-              label="ReShade"
-              active={activeView === "reshade"}
-              onClick={() => onViewChange("reshade")}
-            />
-            <NavItem
-              icon={<Camera className="w-[22px] h-[22px]" />}
-              label="Snapshots"
-              active={activeView === "snapshots"}
-              onClick={() => onViewChange("snapshots")}
-            />
             <NavItem
               icon={<Archive className="w-[22px] h-[22px]" />}
               label="Backups"

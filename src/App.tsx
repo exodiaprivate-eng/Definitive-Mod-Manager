@@ -34,7 +34,7 @@ interface PatchDetail {
 
 let NEXUS_API_KEY = "";
 
-const CURRENT_VERSION = "1.0.3";
+const CURRENT_VERSION = "1.0.4";
 const GITHUB_RELEASE_URL = "https://api.github.com/repos/exodiaprivate-eng/Definitive-Mod-Manager/releases/latest";
 
 const DEFAULT_CONFIG: AppConfig = {
@@ -178,7 +178,7 @@ export default function App() {
 
   useEffect(() => {
     async function init() {
-      addLog("Definitive Mod Manager v1.0.3 loaded", "success");
+      addLog("Definitive Mod Manager v1.0.4 loaded", "success");
 
       // Determine app directory dynamically from exe location
       let appDir = "";
@@ -214,7 +214,7 @@ export default function App() {
 
       // Initialize app directories and backups
       try {
-        const initResult = await invoke<{ success: boolean; mods_dir_created: boolean; backups_created: boolean; messages: string[]; program_files_warning: boolean }>("initialize_app", {
+        const initResult = await invoke<{ success: boolean; mods_dir_created: boolean; backups_created: boolean; messages: string[]; program_files_warning: boolean; papgt_modified: boolean }>("initialize_app", {
           gamePath: detectedPath,
           appDir,
         });
@@ -224,6 +224,10 @@ export default function App() {
         if (initResult.program_files_warning) {
           addLog("Warning: Game is under Program Files — write permissions may be restricted", "warning");
           toast.warning("Game is installed under Program Files — this can cause modding issues. Consider moving your Steam library.", { duration: 10000 });
+        }
+        if (initResult.papgt_modified) {
+          addLog("Warning: PAPGT is not vanilla — another tool or leftover mods may be active", "warning");
+          toast.warning("Game files appear modified. If you have issues, click Unmount or verify game files through Steam.", { duration: 12000 });
         }
       } catch (e) {
         addLog(`Initialization warning: ${e}`, "warning");
@@ -1915,14 +1919,6 @@ export default function App() {
               />
             )}
 
-            {view === "snapshots" && (
-              <SnapshotView
-                snapshots={snapshots}
-                onCreate={createSnapshot}
-                onRestore={restoreSnapshot}
-                onDelete={deleteSnapshot}
-              />
-            )}
             {view === "backups" && (
               <BackupManager
                 backups={backups}

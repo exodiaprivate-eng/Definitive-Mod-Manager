@@ -89,6 +89,7 @@ export interface InitResult {
   backups_created: boolean;
   messages: string[];
   program_files_warning: boolean;
+  papgt_modified: boolean;
 }
 
 export interface ModProfile {

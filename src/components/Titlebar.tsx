@@ -25,7 +25,7 @@ export function Titlebar({ latestVersion, onUpdateClick }: TitlebarProps) {
             Definitive Mod Manager
           </span>
           <span className="text-xs text-text-secondary font-mono" data-tauri-drag-region>
-            v1.0.3
+            v1.0.4
           </span>
           {latestVersion && (
             <button
