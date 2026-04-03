@@ -73,9 +73,10 @@ const changelog = [
   {
     version: "1.0.2",
     date: "April 2026",
-    title: "Mount Button Fix",
+    title: "Mount Fix & Update Checker",
     changes: [
       "Fixed Mount Mods button being disabled when only texture mods or archive & file mods are enabled",
+      "Added automatic update checker — detects new releases on startup with a clickable update badge in the titlebar",
     ],
   },
   {

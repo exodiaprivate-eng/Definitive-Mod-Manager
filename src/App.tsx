@@ -34,6 +34,9 @@ interface PatchDetail {
 
 let NEXUS_API_KEY = "";
 
+const CURRENT_VERSION = "1.0.2";
+const GITHUB_RELEASE_URL = "https://api.github.com/repos/exodiaprivate-eng/Definitive-Mod-Manager/releases/latest";
+
 const DEFAULT_CONFIG: AppConfig = {
   gamePath: "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Crimson Desert",
   modsPath: "",
@@ -84,6 +87,7 @@ export default function App() {
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [thumbnails, setThumbnails] = useState<Record<string, string>>({});
   const [importedProfile, setImportedProfile] = useState<CommunityProfile | null>(null);
+  const [latestVersion, setLatestVersion] = useState<string | null>(null);
   const [textureMods, setTextureMods] = useState<TextureModEntry[]>([]);
   const activeTextures = config.activeTextures || [];
   const [gameFonts, setGameFonts] = useState<GameFontEntry[]>([]);
@@ -244,6 +248,22 @@ export default function App() {
         } catch (e) {
           addLog(`Warning: could not save config: ${e}`, "warning");
         }
+      }
+
+      // Check for DMM updates
+      try {
+        const resp = await fetch(GITHUB_RELEASE_URL);
+        if (resp.ok) {
+          const data = await resp.json();
+          const tag = (data.tag_name || "").replace(/^v/, "");
+          if (tag && tag !== CURRENT_VERSION) {
+            setLatestVersion(tag);
+            addLog(`Update available: v${tag} (current: v${CURRENT_VERSION})`, "warning");
+            toast.info(`Mod Manager update available: v${tag}`, { duration: 8000 });
+          }
+        }
+      } catch {
+        // Silently ignore — no network or API issue
       }
 
       setLoaded(true);
@@ -1699,7 +1719,7 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen bg-background overflow-hidden relative" style={{ padding: 0 }}>
-      <Titlebar />
+      <Titlebar latestVersion={latestVersion} />
       {/* Drag-and-drop overlay */}
       {dragOver && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm border-2 border-dashed border-accent" style={{ margin: "8px" }}>

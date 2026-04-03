@@ -1,7 +1,11 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Minus, Square, X } from "lucide-react";
+import { Minus, Square, X, ArrowUpCircle } from "lucide-react";
 
-export function Titlebar() {
+interface TitlebarProps {
+  latestVersion?: string | null;
+}
+
+export function Titlebar({ latestVersion }: TitlebarProps) {
   const handleMinimize = () => getCurrentWindow().minimize();
   const handleMaximize = () => getCurrentWindow().toggleMaximize();
   const handleClose = () => getCurrentWindow().close();
@@ -19,6 +23,17 @@ export function Titlebar() {
           <span className="text-xs text-text-secondary font-mono" data-tauri-drag-region>
             v1.0.2
           </span>
+          {latestVersion && (
+            <button
+              onClick={() => window.open("https://github.com/exodiaprivate-eng/Definitive-Mod-Manager/releases/latest", "_blank")}
+              className="flex items-center gap-1.5 text-xs font-semibold text-accent bg-accent/10 border border-accent/20 rounded-sm hover:bg-accent/20 transition-all"
+              style={{ padding: "2px 8px" }}
+              title={`Update to v${latestVersion}`}
+            >
+              <ArrowUpCircle className="w-3 h-3" />
+              v{latestVersion}
+            </button>
+          )}
         </div>
 
         <div className="flex items-center">
