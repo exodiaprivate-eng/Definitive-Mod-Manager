@@ -88,6 +88,9 @@ export default function App() {
   const [thumbnails, setThumbnails] = useState<Record<string, string>>({});
   const [importedProfile, setImportedProfile] = useState<CommunityProfile | null>(null);
   const [latestVersion, setLatestVersion] = useState<string | null>(null);
+  const [updateDownloadUrl, setUpdateDownloadUrl] = useState<string | null>(null);
+  const [showUpdatePrompt, setShowUpdatePrompt] = useState(false);
+  const [updating, setUpdating] = useState(false);
   const [textureMods, setTextureMods] = useState<TextureModEntry[]>([]);
   const activeTextures = config.activeTextures || [];
   const [gameFonts, setGameFonts] = useState<GameFontEntry[]>([]);
@@ -257,9 +260,16 @@ export default function App() {
           const data = await resp.json();
           const tag = (data.tag_name || "").replace(/^v/, "");
           if (tag && tag !== CURRENT_VERSION) {
+            // Find the standalone exe asset
+            const exeAsset = (data.assets || []).find((a: { name: string }) =>
+              a.name.toLowerCase().endsWith(".exe") && !a.name.toLowerCase().includes("setup") && !a.name.toLowerCase().includes("nsis")
+            );
             setLatestVersion(tag);
+            if (exeAsset) {
+              setUpdateDownloadUrl(exeAsset.browser_download_url);
+            }
             addLog(`Update available: v${tag} (current: v${CURRENT_VERSION})`, "warning");
-            toast.info(`Mod Manager update available: v${tag}`, { duration: 8000 });
+            setShowUpdatePrompt(true);
           }
         }
       } catch {
@@ -1719,7 +1729,7 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen bg-background overflow-hidden relative" style={{ padding: 0 }}>
-      <Titlebar latestVersion={latestVersion} />
+      <Titlebar latestVersion={latestVersion} onUpdateClick={() => setShowUpdatePrompt(true)} />
       {/* Drag-and-drop overlay */}
       {dragOver && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm border-2 border-dashed border-accent" style={{ margin: "8px" }}>
@@ -1905,6 +1915,64 @@ export default function App() {
           papgtStatus={papgtStatus}
         />
       </div>
+      {showUpdatePrompt && latestVersion && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-surface border border-border/60 rounded-sm shadow-2xl" style={{ padding: "28px 32px", maxWidth: "420px", width: "100%" }}>
+            <h2 className="text-lg font-bold text-text-primary mb-2">Update Available</h2>
+            <p className="text-sm text-text-secondary mb-1">
+              A new version of Definitive Mod Manager is available.
+            </p>
+            <p className="text-sm text-text-muted mb-5">
+              <span className="text-text-secondary">Current:</span> v{CURRENT_VERSION} &rarr; <span className="text-accent font-semibold">v{latestVersion}</span>
+            </p>
+            {updating ? (
+              <div className="flex items-center gap-3 text-sm text-accent">
+                <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+                Downloading update...
+              </div>
+            ) : (
+              <div className="flex items-center justify-end gap-3">
+                <button
+                  onClick={() => setShowUpdatePrompt(false)}
+                  className="px-4 py-2 text-sm font-medium text-text-secondary bg-white/[0.03] border border-border/60 rounded-sm hover:bg-white/[0.06] transition-all"
+                >
+                  Later
+                </button>
+                {updateDownloadUrl ? (
+                  <button
+                    onClick={async () => {
+                      setUpdating(true);
+                      addLog("Downloading update...", "info");
+                      try {
+                        await invoke("download_and_apply_update", { downloadUrl: updateDownloadUrl });
+                        addLog("Update downloaded — restarting...", "success");
+                        await getCurrentWindow().close();
+                      } catch (e) {
+                        addLog(`Update failed: ${e}`, "error");
+                        toast.error(`Update failed: ${e}`);
+                        setUpdating(false);
+                      }
+                    }}
+                    className="px-4 py-2 text-sm font-semibold text-white bg-gradient-to-r from-accent to-indigo-500 rounded-sm hover:brightness-110 transition-all"
+                  >
+                    Update Now
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => {
+                      window.open("https://github.com/exodiaprivate-eng/Definitive-Mod-Manager/releases/latest", "_blank");
+                      setShowUpdatePrompt(false);
+                    }}
+                    className="px-4 py-2 text-sm font-semibold text-white bg-gradient-to-r from-accent to-indigo-500 rounded-sm hover:brightness-110 transition-all"
+                  >
+                    View Release
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       {showPreflight && (
         <PreflightDialog
           result={preflightResult}

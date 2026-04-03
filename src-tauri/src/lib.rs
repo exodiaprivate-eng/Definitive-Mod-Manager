@@ -115,6 +115,8 @@ pub fn run() {
             // Community Profiles
             commands::export_community_profile,
             commands::import_community_profile,
+            // Self-Update
+            commands::download_and_apply_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

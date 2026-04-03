@@ -5695,3 +5695,46 @@ pub fn import_community_profile(profile_path: String) -> Result<CommunityProfile
         .map_err(|e| format!("Failed to parse profile file: {}", e))?;
     Ok(profile)
 }
+
+#[tauri::command]
+pub fn download_and_apply_update(download_url: String) -> Result<(), String> {
+    let exe = std::env::current_exe()
+        .map_err(|e| format!("Failed to get exe path: {}", e))?;
+    let exe_dir = exe.parent()
+        .ok_or_else(|| "Failed to get exe directory".to_string())?;
+    let new_exe = exe_dir.join("definitive-mod-manager.exe.update");
+
+    // Download the new exe
+    let response = reqwest::blocking::get(&download_url)
+        .map_err(|e| format!("Download failed: {}", e))?;
+    if !response.status().is_success() {
+        return Err(format!("Download failed with status: {}", response.status()));
+    }
+    let bytes = response.bytes()
+        .map_err(|e| format!("Failed to read download: {}", e))?;
+    fs::write(&new_exe, &bytes)
+        .map_err(|e| format!("Failed to save update: {}", e))?;
+
+    // Create a batch script to replace the exe after we exit
+    let bat_path = exe_dir.join("_update.bat");
+    let exe_str = exe.to_string_lossy();
+    let new_exe_str = new_exe.to_string_lossy();
+    let script = format!(
+        "@echo off\r\n\
+         timeout /t 2 /nobreak >nul\r\n\
+         del \"{exe_str}\"\r\n\
+         move \"{new_exe_str}\" \"{exe_str}\"\r\n\
+         start \"\" \"{exe_str}\"\r\n\
+         del \"%~f0\"\r\n"
+    );
+    fs::write(&bat_path, &script)
+        .map_err(|e| format!("Failed to create update script: {}", e))?;
+
+    // Launch the batch script detached
+    std::process::Command::new("cmd")
+        .args(["/C", "start", "/min", "", &bat_path.to_string_lossy()])
+        .spawn()
+        .map_err(|e| format!("Failed to launch updater: {}", e))?;
+
+    Ok(())
+}
