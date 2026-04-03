@@ -84,6 +84,8 @@ pub fn run() {
             commands::uninstall_asi_mod,
             commands::open_asi_config,
             commands::install_asi_loader,
+            commands::check_has_asi_files,
+            commands::collect_asi_from_mods,
             // Mod Packs
             commands::create_mod_pack,
             commands::import_mod_pack,

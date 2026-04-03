@@ -47,7 +47,7 @@ function NavItem({ icon, label, active, onClick, badge, badgeColor, disabled }: 
       onClick={disabled ? undefined : onClick}
       disabled={disabled}
       className={cn(
-        "w-full flex items-center gap-3.5 px-5 py-3.5 rounded-sm text-[15px] font-medium transition-all duration-200 relative overflow-hidden",
+        "w-full flex items-center gap-4 px-5 py-4 rounded-sm text-base font-medium transition-all duration-200 relative overflow-hidden",
         disabled
           ? "text-text-muted/40 cursor-not-allowed"
           : active
@@ -81,19 +81,26 @@ export function Sidebar({ activeView, onViewChange, modCount, activeCount, confl
     <div className="w-64 h-full sidebar-bg border border-border/30 flex flex-col shrink-0">
       <div className="px-4 pt-8 pb-4 flex-1">
         <div className="mb-10">
-          <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-text-muted/60 px-5 mb-4">
+          <p className="text-[11px] font-bold uppercase tracking-[0.15em] text-text-muted/60 px-5 mb-4">
             Manage
           </p>
           <div className="space-y-1">
             <NavItem
-              icon={<Blocks className="w-5 h-5" />}
+              icon={<Blocks className="w-[22px] h-[22px]" />}
               label="Mods"
               active={activeView === "mods"}
               onClick={() => onViewChange("mods")}
               badge={modCount}
             />
             <NavItem
-              icon={<AlertTriangle className="w-5 h-5" />}
+              icon={<Plug className="w-[22px] h-[22px]" />}
+              label="ASI Mods"
+              active={activeView === "asi"}
+              onClick={() => onViewChange("asi")}
+              badge={asiCount}
+            />
+            <NavItem
+              icon={<AlertTriangle className="w-[22px] h-[22px]" />}
               label="Conflicts"
               active={activeView === "conflicts"}
               onClick={() => onViewChange("conflicts")}
@@ -101,45 +108,37 @@ export function Sidebar({ activeView, onViewChange, modCount, activeCount, confl
               badgeColor={conflictCount > 0 ? "bg-danger/20 text-danger" : undefined}
             />
             <NavItem
-              icon={<Grid3x3 className="w-5 h-5" />}
+              icon={<Grid3x3 className="w-[22px] h-[22px]" />}
               label="Compatibility"
               active={activeView === "compatibility"}
               onClick={() => onViewChange("compatibility")}
             />
             <NavItem
-              icon={<Globe className="w-5 h-5" />}
+              icon={<Globe className="w-[22px] h-[22px]" />}
               label="Language"
               active={activeView === "language"}
               onClick={() => onViewChange("language")}
             />
-
             <NavItem
-              icon={<Plug className="w-5 h-5" />}
-              label="ASI Mods"
-              active={activeView === "asi"}
-              onClick={() => onViewChange("asi")}
-              badge={asiCount}
-            />
-            <NavItem
-              icon={<Bookmark className="w-5 h-5" />}
+              icon={<Bookmark className="w-[22px] h-[22px]" />}
               label="Profiles"
               active={activeView === "profiles"}
               onClick={() => onViewChange("profiles")}
             />
             <NavItem
-              icon={<Package className="w-5 h-5" />}
+              icon={<Package className="w-[22px] h-[22px]" />}
               label="Packs"
               active={activeView === "packs"}
               onClick={() => onViewChange("packs")}
             />
             <NavItem
-              icon={<Users className="w-5 h-5" />}
+              icon={<Users className="w-[22px] h-[22px]" />}
               label="Community"
               active={activeView === "community"}
               onClick={() => onViewChange("community")}
             />
             <NavItem
-              icon={<Hammer className="w-5 h-5" />}
+              icon={<Hammer className="w-[22px] h-[22px]" />}
               label="Create Mod (Coming Soon)"
               active={false}
               onClick={() => {}}
@@ -149,37 +148,37 @@ export function Sidebar({ activeView, onViewChange, modCount, activeCount, confl
         </div>
 
         <div>
-          <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-text-muted/60 px-5 mb-4">
+          <p className="text-[11px] font-bold uppercase tracking-[0.15em] text-text-muted/60 px-5 mb-4">
             System
           </p>
           <div className="space-y-1">
             <NavItem
-              icon={<Paintbrush className="w-5 h-5" />}
+              icon={<Paintbrush className="w-[22px] h-[22px]" />}
               label="ReShade"
               active={activeView === "reshade"}
               onClick={() => onViewChange("reshade")}
             />
             <NavItem
-              icon={<Camera className="w-5 h-5" />}
+              icon={<Camera className="w-[22px] h-[22px]" />}
               label="Snapshots"
               active={activeView === "snapshots"}
               onClick={() => onViewChange("snapshots")}
             />
             <NavItem
-              icon={<Archive className="w-5 h-5" />}
+              icon={<Archive className="w-[22px] h-[22px]" />}
               label="Backups"
               active={activeView === "backups"}
               onClick={() => onViewChange("backups")}
             />
 
             <NavItem
-              icon={<Settings className="w-5 h-5" />}
+              icon={<Settings className="w-[22px] h-[22px]" />}
               label="Settings"
               active={activeView === "settings"}
               onClick={() => onViewChange("settings")}
             />
             <NavItem
-              icon={<Info className="w-5 h-5" />}
+              icon={<Info className="w-[22px] h-[22px]" />}
               label="About"
               active={activeView === "about"}
               onClick={() => onViewChange("about")}

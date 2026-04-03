@@ -205,7 +205,7 @@ pub fn get_mod_details(mods_path: String, file_name: String) -> Result<ModFile, 
 }
 
 #[tauri::command]
-pub fn check_conflicts(mods_path: String, active_mods: Vec<String>, browser_mod_folders: Option<Vec<String>>) -> Result<Vec<ConflictInfo>, String> {
+pub fn check_conflicts(mods_path: String, active_mods: Vec<String>, browser_mod_folders: Option<Vec<String>>, game_path: Option<String>) -> Result<Vec<ConflictInfo>, String> {
     let mods_dir = Path::new(&mods_path);
     let mut offset_map: HashMap<(String, u64), Vec<(String, String)>> = HashMap::new();
 
@@ -365,6 +365,65 @@ pub fn check_conflicts(mods_path: String, active_mods: Vec<String>, browser_mod_
                                 format!("{} replaces this file (used as base for patches)", m)
                             }
                         }).collect(),
+                    });
+                }
+            }
+        }
+    }
+
+    // ASI/DLL mod conflict detection
+    if let Some(ref gp) = game_path {
+        let bin64 = Path::new(gp).join("bin64");
+        if bin64.exists() {
+            // Collect active ASI/DLL mods and their INI files
+            let mut asi_files: Vec<(String, Vec<String>)> = Vec::new(); // (plugin_name, [companion_files])
+            if let Ok(entries) = fs::read_dir(&bin64) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let lower = name.to_lowercase();
+                    if lower.ends_with(".asi") {
+                        let stem = name[..name.len() - 4].to_string();
+                        let mut companions = vec![name.clone()];
+                        // Check for INI
+                        let ini = format!("{}.ini", stem);
+                        if bin64.join(&ini).exists() {
+                            companions.push(ini);
+                        }
+                        asi_files.push((stem, companions));
+                    }
+                }
+            }
+
+            // Check if any ASI mods modify the same game DLLs by checking known hook targets
+            // Also detect if multiple ASI mods ship the same companion DLL
+            let mut dll_owners: HashMap<String, Vec<String>> = HashMap::new();
+            if let Ok(entries) = fs::read_dir(&bin64) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let lower = name.to_lowercase();
+                    // Skip the loader itself and the game exe
+                    if ASI_LOADER_NAMES.contains(&lower.as_str()) || lower.ends_with(".exe") {
+                        continue;
+                    }
+                    if lower.ends_with(".dll") && !lower.ends_with(".asi") {
+                        // Check if multiple ASI mods reference this DLL
+                        for (plugin_name, companions) in &asi_files {
+                            if companions.iter().any(|c| c.to_lowercase() == lower) {
+                                dll_owners.entry(lower.clone()).or_default().push(plugin_name.clone());
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Flag shared DLL conflicts
+            for (dll, owners) in &dll_owners {
+                if owners.len() > 1 {
+                    conflicts.push(ConflictInfo {
+                        offset: 0,
+                        game_file: format!("bin64/{}", dll),
+                        mods: owners.clone(),
+                        labels: owners.iter().map(|o| format!("ASI plugin '{}' uses this DLL", o)).collect(),
                     });
                 }
             }
@@ -1964,6 +2023,70 @@ pub fn import_folder(source_path: String, mods_path: String) -> Result<String, S
 
     copy_dir(src, &dest)?;
     Ok(folder_name)
+}
+
+#[tauri::command]
+pub fn collect_asi_from_mods(mods_path: String, game_path: String) -> Result<Vec<String>, String> {
+    let mods_dir = Path::new(&mods_path);
+    let bin64 = Path::new(&game_path).join("bin64");
+    if !mods_dir.exists() {
+        return Ok(vec![]);
+    }
+    fs::create_dir_all(&bin64).map_err(|e| format!("Failed to create bin64: {}", e))?;
+
+    let mut installed: Vec<String> = Vec::new();
+    let entries = fs::read_dir(mods_dir).map_err(|e| format!("Failed to read mods dir: {}", e))?;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() { continue; }
+        let name = entry.file_name().to_string_lossy().to_string();
+        let lower = name.to_lowercase();
+
+        if lower.ends_with(".asi") || (lower.ends_with(".dll") && !ASI_LOADER_NAMES.contains(&lower.as_str())) {
+            let dest = bin64.join(&name);
+            fs::copy(&path, &dest).map_err(|e| format!("Failed to copy {}: {}", name, e))?;
+            // Also copy companion .ini if present
+            let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+            let ini_name = format!("{}.ini", stem);
+            let ini_src = mods_dir.join(&ini_name);
+            if ini_src.exists() {
+                fs::copy(&ini_src, bin64.join(&ini_name)).ok();
+                fs::remove_file(&ini_src).ok();
+            }
+            fs::remove_file(&path).ok();
+            installed.push(name);
+        }
+    }
+
+    Ok(installed)
+}
+
+#[tauri::command]
+pub fn check_has_asi_files(source_path: String) -> bool {
+    let path = Path::new(&source_path);
+    if path.is_file() {
+        let lower = source_path.to_lowercase();
+        return lower.ends_with(".asi") || lower.ends_with(".dll");
+    }
+    if path.is_dir() {
+        fn has_asi(dir: &Path) -> bool {
+            if let Ok(entries) = fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_dir() {
+                        if has_asi(&p) { return true; }
+                    } else {
+                        let name = entry.file_name().to_string_lossy().to_lowercase();
+                        if name.ends_with(".asi") { return true; }
+                    }
+                }
+            }
+            false
+        }
+        return has_asi(path);
+    }
+    false
 }
 
 // --- Game detection and launch support ---

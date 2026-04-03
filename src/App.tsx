@@ -34,7 +34,7 @@ interface PatchDetail {
 
 let NEXUS_API_KEY = "";
 
-const CURRENT_VERSION = "1.0.2";
+const CURRENT_VERSION = "1.0.3";
 const GITHUB_RELEASE_URL = "https://api.github.com/repos/exodiaprivate-eng/Definitive-Mod-Manager/releases/latest";
 
 const DEFAULT_CONFIG: AppConfig = {
@@ -116,6 +116,20 @@ export default function App() {
     setLogs([]);
   }
 
+  async function collectAsiFromMods() {
+    if (!config.modsPath || !config.gamePath) return;
+    try {
+      const installed = await invoke<string[]>("collect_asi_from_mods", { modsPath: config.modsPath, gamePath: config.gamePath });
+      if (installed.length > 0) {
+        addLog(`Auto-installed ASI from mods folder: ${installed.join(", ")}`, "success");
+        toast.success(`Installed ${installed.length} ASI file(s) from mods folder`);
+        scanAsiMods();
+      }
+    } catch {
+      // Silently ignore
+    }
+  }
+
   async function scanAsiMods() {
     try {
       const status = await invoke<AsiStatus>("scan_asi_mods", { gamePath: config.gamePath });
@@ -164,7 +178,7 @@ export default function App() {
 
   useEffect(() => {
     async function init() {
-      addLog("Definitive Mod Manager v1.0.2 loaded", "success");
+      addLog("Definitive Mod Manager v1.0.3 loaded", "success");
 
       // Determine app directory dynamically from exe location
       let appDir = "";
@@ -324,11 +338,17 @@ export default function App() {
           if (!config.modsPath || paths.length === 0) return;
 
           let imported = 0;
+          let asiImported = 0;
           for (const filePath of paths) {
             const name = filePath.split(/[\\/]/).pop() || filePath;
             const ext = name.split(".").pop()?.toLowerCase();
             try {
-              if (ext === "zip") {
+              if (ext === "asi" || ext === "dll") {
+                // ASI/DLL mod — install directly to game bin64
+                const installed = await invoke<string[]>("install_asi_mod", { sourcePath: filePath, gamePath: config.gamePath });
+                asiImported += installed.length;
+                addLog(`Installed ASI mod: ${installed.join(", ")}`, "success");
+              } else if (ext === "zip") {
                 await invoke("import_archive", { archivePath: filePath, modsPath: config.modsPath });
                 imported++;
                 addLog(`Imported archive: ${name}`, "success");
@@ -337,20 +357,32 @@ export default function App() {
                 imported++;
                 addLog(`Imported: ${name}`, "success");
               } else {
-                // Try as folder (file replacement mod or texture mod)
-                const result = await invoke<string>("import_folder", { sourcePath: filePath, modsPath: config.modsPath });
-                imported++;
-                addLog(`Imported folder: ${result}`, "success");
+                // Check if folder contains ASI files
+                const hasAsi = await invoke<boolean>("check_has_asi_files", { sourcePath: filePath });
+                if (hasAsi) {
+                  const installed = await invoke<string[]>("install_asi_mod", { sourcePath: filePath, gamePath: config.gamePath });
+                  asiImported += installed.length;
+                  addLog(`Installed ASI mod: ${installed.join(", ")}`, "success");
+                } else {
+                  // Regular folder (file replacement mod or texture mod)
+                  const result = await invoke<string>("import_folder", { sourcePath: filePath, modsPath: config.modsPath });
+                  imported++;
+                  addLog(`Imported folder: ${result}`, "success");
+                }
               }
             } catch (e) {
               addLog(`Import failed: ${name} — ${e}`, "error");
             }
           }
-          if (imported > 0) {
-            toast.success(`Imported ${imported} mod(s)`);
+          if (imported > 0 || asiImported > 0) {
+            const parts: string[] = [];
+            if (imported > 0) parts.push(`${imported} mod(s)`);
+            if (asiImported > 0) parts.push(`${asiImported} ASI file(s)`);
+            toast.success(`Imported ${parts.join(" + ")}`);
             scanMods();
             scanBrowserMods();
             scanTextureMods();
+            if (asiImported > 0) scanAsiMods();
           }
         }
       }
@@ -405,6 +437,9 @@ export default function App() {
             return prev;
           });
         }).catch(() => {});
+
+        // Pick up any ASI files dropped into the mods folder
+        collectAsiFromMods();
       }
     }, 3000);
 
@@ -419,6 +454,7 @@ export default function App() {
       })
       .catch(() => setGamePathValid(false));
     scanPapgt();
+    collectAsiFromMods();
     scanAsiMods();
     scanReshade();
     checkGameVersion();
@@ -427,7 +463,8 @@ export default function App() {
   useEffect(() => {
     if (!config.modsPath) return;
     const activeFileNames = config.activeMods.map((m) => m.fileName);
-    if (activeFileNames.length < 2) {
+    const hasEnoughToCheck = activeFileNames.length >= 2 || activeBrowserMods.length > 0 || (asiStatus && asiStatus.plugins.length > 0);
+    if (!hasEnoughToCheck) {
       setConflicts([]);
       return;
     }
@@ -435,10 +472,11 @@ export default function App() {
       modsPath: config.modsPath,
       activeMods: activeFileNames,
       browserModFolders: activeBrowserMods.length > 0 ? activeBrowserMods : null,
+      gamePath: config.gamePath || null,
     })
       .then(setConflicts)
       .catch(() => setConflicts([]));
-  }, [config.activeMods, config.modsPath]);
+  }, [config.activeMods, config.modsPath, asiStatus]);
 
   async function scanMods() {
     try {
@@ -1739,7 +1777,7 @@ export default function App() {
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm border-2 border-dashed border-accent" style={{ margin: "8px" }}>
           <div className="text-center">
             <p className="text-2xl font-bold text-accent mb-2">Drop Mods Here</p>
-            <p className="text-sm text-text-muted">.json or .zip files</p>
+            <p className="text-sm text-text-muted">.json, .zip, .asi, .dll, or folders</p>
           </div>
         </div>
       )}

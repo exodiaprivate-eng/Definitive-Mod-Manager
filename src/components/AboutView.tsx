@@ -71,6 +71,22 @@ const features = [
 
 const changelog = [
   {
+    version: "1.0.3",
+    date: "April 2026",
+    title: "ASI Improvements, UI Polish & Safety",
+    changes: [
+      "ASI drag-and-drop — drop .asi or .dll files onto the window to install directly to bin64",
+      "ASI auto-pickup — .asi files placed in the mods folder are auto-detected and installed to the game",
+      "ASI mod cards redesigned to match the mod library style with accent bars, animated toggles, and status badges",
+      "ASI/DLL conflict detection added to the Conflicts and Compatibility sections",
+      "Sidebar icons and text enlarged for better readability",
+      "ASI Mods moved above Conflicts in the sidebar navigation",
+      "Titlebar name now has a gradient accent color and proper spacing",
+      "Default window size increased to 1440x900 for better layout on first launch",
+      "Drop overlay updated to show all supported file types (.json, .zip, .asi, .dll, folders)",
+    ],
+  },
+  {
     version: "1.0.2",
     date: "April 2026",
     title: "Mount Fix, Update Checker & Safety Improvements",

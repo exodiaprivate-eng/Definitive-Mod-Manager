@@ -17,12 +17,15 @@ export function Titlebar({ latestVersion, onUpdateClick }: TitlebarProps) {
         data-tauri-drag-region
         className="flex items-center justify-between h-12 px-5 bg-surface/80 border-b border-border/50 select-none shrink-0"
       >
-        <div className="flex items-center gap-3" data-tauri-drag-region>
-          <span className="text-base font-bold tracking-wide text-text-primary" data-tauri-drag-region>
+        <div className="flex items-center gap-3" style={{ marginLeft: "8px" }} data-tauri-drag-region>
+          <span
+            className="text-base font-bold tracking-wide bg-clip-text text-transparent bg-gradient-to-r from-accent via-purple-400 to-pink-400"
+            data-tauri-drag-region
+          >
             Definitive Mod Manager
           </span>
           <span className="text-xs text-text-secondary font-mono" data-tauri-drag-region>
-            v1.0.2
+            v1.0.3
           </span>
           {latestVersion && (
             <button
