@@ -1380,6 +1380,25 @@ pub fn apply_mods(
                         continue;
                     }
 
+                    // Check if already patched (bytes already match target)
+                    let current = &flat_data[offset..offset + patched_bytes.len()];
+                    if current == patched_bytes.as_slice() {
+                        continue; // Already applied, skip
+                    }
+
+                    // Verify original bytes match if provided
+                    if !change.original.is_empty() {
+                        if let Ok(orig_bytes) = hex::decode(&change.original) {
+                            if current != orig_bytes.as_slice() && current != patched_bytes.as_slice() {
+                                result.errors.push(format!(
+                                    "{}: byte mismatch at offset {} in {} — file may be modified by another mod",
+                                    mod_name, change.offset, bare_filename
+                                ));
+                                continue;
+                            }
+                        }
+                    }
+
                     flat_data[offset..offset + patched_bytes.len()].copy_from_slice(&patched_bytes);
                 }
                 // Track unique mod names applied
@@ -1530,6 +1549,26 @@ pub fn apply_mods(
                 if offset + patched_bytes.len() > data.len() {
                     continue;
                 }
+
+                // Check if already patched
+                let current = &data[offset..offset + patched_bytes.len()];
+                if current == patched_bytes.as_slice() {
+                    continue; // Already applied, skip
+                }
+
+                // Verify original bytes match if provided
+                if !change.original.is_empty() {
+                    if let Ok(orig_bytes) = hex::decode(&change.original) {
+                        if current != orig_bytes.as_slice() && current != patched_bytes.as_slice() {
+                            result.errors.push(format!(
+                                "{}: byte mismatch at offset {} in {} — file may be modified by another mod",
+                                mod_name, change.offset, game_file
+                            ));
+                            continue;
+                        }
+                    }
+                }
+
                 data[offset..offset + patched_bytes.len()].copy_from_slice(&patched_bytes);
             }
             if !result.applied.contains(mod_name) {
@@ -1576,6 +1615,7 @@ pub struct InitResult {
     pub mods_dir_created: bool,
     pub backups_created: bool,
     pub messages: Vec<String>,
+    pub program_files_warning: bool,
 }
 
 #[tauri::command]
@@ -1613,11 +1653,19 @@ pub fn initialize_app(game_path: String, app_dir: String) -> Result<InitResult, 
         mods_dir_created: false,
         backups_created: false,
         messages: Vec::new(),
+        program_files_warning: false,
     };
 
     let app_path = Path::new(&app_dir);
     let mods_dir = app_path.join("mods");
     let backup_dir = app_path.join("backups");
+
+    // Warn if game is installed under Program Files (restricted write permissions)
+    let game_lower = game_path.to_lowercase();
+    if game_lower.contains("program files") {
+        result.program_files_warning = true;
+        result.messages.push("Game is installed under Program Files — this can cause write permission issues with modding. Consider moving your Steam library to a non-protected location like C:\\SteamLibrary.".to_string());
+    }
 
     // Create mods directory
     if !mods_dir.exists() {

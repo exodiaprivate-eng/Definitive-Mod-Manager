@@ -73,10 +73,14 @@ const changelog = [
   {
     version: "1.0.2",
     date: "April 2026",
-    title: "Mount Fix & Update Checker",
+    title: "Mount Fix, Update Checker & Safety Improvements",
     changes: [
       "Fixed Mount Mods button being disabled when only texture mods or archive & file mods are enabled",
-      "Added automatic update checker — detects new releases on startup with a clickable update badge in the titlebar",
+      "Added automatic update checker — detects new releases on startup with one-click auto-update",
+      "Already-patched detection — skips patches that are already applied, prevents double-patching corruption",
+      "Original byte verification — warns when game files don't match expected state before patching",
+      "Program Files warning — one-time toast on startup if the game is in a restricted write path",
+      "Preset picker — mods with bracket-labeled variants like [50], [100], [150] now show radio buttons instead of individual toggles",
     ],
   },
   {

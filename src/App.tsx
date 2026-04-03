@@ -200,12 +200,16 @@ export default function App() {
 
       // Initialize app directories and backups
       try {
-        const initResult = await invoke<{ success: boolean; mods_dir_created: boolean; backups_created: boolean; messages: string[] }>("initialize_app", {
+        const initResult = await invoke<{ success: boolean; mods_dir_created: boolean; backups_created: boolean; messages: string[]; program_files_warning: boolean }>("initialize_app", {
           gamePath: detectedPath,
           appDir,
         });
         for (const msg of initResult.messages) {
           addLog(msg, initResult.backups_created ? "success" : "info");
+        }
+        if (initResult.program_files_warning) {
+          addLog("Warning: Game is under Program Files — write permissions may be restricted", "warning");
+          toast.warning("Game is installed under Program Files — this can cause modding issues. Consider moving your Steam library.", { duration: 10000 });
         }
       } catch (e) {
         addLog(`Initialization warning: ${e}`, "warning");

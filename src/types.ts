@@ -88,6 +88,7 @@ export interface InitResult {
   mods_dir_created: boolean;
   backups_created: boolean;
   messages: string[];
+  program_files_warning: boolean;
 }
 
 export interface ModProfile {

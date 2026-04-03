@@ -60,6 +60,37 @@ export function ModCard({ mod, index, onToggle, dragHandleProps, disabledIndices
     }
   }
 
+  // Detect bracket-labeled preset groups like [50], [100], [150]
+  const bracketRegex = /^\[([^\]]+)\]/;
+  const presetGroups: Record<string, { label: string; indices: number[] }[]> = {};
+  let hasPresets = false;
+  for (const p of allPatches) {
+    const match = p.change.label.match(bracketRegex);
+    if (match) {
+      const groupKey = match[1];
+      if (!presetGroups[groupKey]) {
+        presetGroups[groupKey] = [];
+      }
+      // Find or create entry for this preset value
+      const cleanLabel = p.change.label.replace(bracketRegex, "").trim();
+      const existing = presetGroups[groupKey].find((e) => e.label === cleanLabel);
+      if (existing) {
+        existing.indices.push(p.globalIndex);
+      } else {
+        presetGroups[groupKey] = [...(presetGroups[groupKey] || []), { label: cleanLabel || groupKey, indices: [p.globalIndex] }];
+      }
+      hasPresets = true;
+    }
+  }
+  // Only treat as presets if there are 2+ groups (otherwise just show normal toggles)
+  const isPresetMode = hasPresets && Object.keys(presetGroups).length >= 2;
+  // Find which preset group is currently active (all its indices are NOT disabled)
+  const activePresetKey = isPresetMode
+    ? Object.keys(presetGroups).find((key) =>
+        presetGroups[key].every((entry) => entry.indices.every((i) => !disabledIndices.includes(i)))
+      ) || null
+    : null;
+
   return (
     <motion.div
       layout
@@ -257,8 +288,60 @@ export function ModCard({ mod, index, onToggle, dragHandleProps, disabledIndices
               ))}
             </div>
 
-            {/* Per-patch toggles */}
-            {allPatches.length > 0 && (
+            {/* Preset picker (radio buttons) for bracket-labeled variants */}
+            {isPresetMode && (
+              <div className="mt-3 space-y-1.5">
+                <p className="text-xs font-bold uppercase tracking-wider text-text-muted/60 mb-2">
+                  Preset Options
+                </p>
+                {Object.entries(presetGroups).map(([key, entries]) => {
+                  const isActive = activePresetKey === key;
+                  return (
+                    <div
+                      key={key}
+                      onClick={() => {
+                        if (!onTogglePatch) return;
+                        // Disable all preset indices first, then enable this group's
+                        const allPresetIndices = Object.values(presetGroups).flat().flatMap((e) => e.indices);
+                        for (const idx of allPresetIndices) {
+                          if (!disabledIndices.includes(idx)) {
+                            onTogglePatch(mod.file_name, idx);
+                          }
+                        }
+                        // Enable this group's indices (they were just disabled above)
+                        setTimeout(() => {
+                          for (const entry of entries) {
+                            for (const idx of entry.indices) {
+                              onTogglePatch(mod.file_name, idx);
+                            }
+                          }
+                        }, 0);
+                      }}
+                      style={{ padding: "10px 16px", cursor: "pointer" }}
+                      className={cn(
+                        "flex items-center gap-3 rounded-sm border transition-all",
+                        isActive
+                          ? "bg-accent/[0.06] border-accent/30"
+                          : "bg-white/[0.01] border-border/30 opacity-70 hover:opacity-100"
+                      )}
+                    >
+                      <div className={cn(
+                        "w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-all",
+                        isActive ? "border-accent" : "border-border/60"
+                      )}>
+                        {isActive && <div className="w-2 h-2 rounded-full bg-accent" />}
+                      </div>
+                      <span className={cn("text-sm flex-1", isActive ? "text-text-primary font-medium" : "text-text-secondary")}>
+                        {key}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Per-patch toggles (standard mode) */}
+            {allPatches.length > 0 && !isPresetMode && (
               <div className="mt-3 space-y-1.5">
                 <p className="text-xs font-bold uppercase tracking-wider text-text-muted/60 mb-2">
                   Individual Patches
