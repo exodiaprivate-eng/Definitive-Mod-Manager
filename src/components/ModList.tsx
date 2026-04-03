@@ -109,6 +109,7 @@ export function ModList({
   });
 
   const activeCount = mods.filter((m) => m.enabled).length;
+  const totalActiveCount = activeCount + activeTextures.length + activeBrowserMods.length;
   const outdatedMods = Object.values(updateStatuses).filter((s) => s.is_outdated);
   const outdatedCount = outdatedMods.length;
 
@@ -184,11 +185,11 @@ export function ModList({
             </button>
             <button
               onClick={onApply}
-              disabled={applying || activeCount === 0}
+              disabled={applying || totalActiveCount === 0}
               style={{ padding: "8px 20px", fontSize: "13px" }}
               className={cn(
                 "flex items-center gap-3 font-semibold rounded-sm transition-all",
-                applying || activeCount === 0
+                applying || totalActiveCount === 0
                   ? "bg-white/[0.03] text-text-muted cursor-not-allowed border border-border/30"
                   : "bg-gradient-to-r from-accent to-indigo-500 text-white shadow-[0_0_20px_rgba(99,102,241,0.35)] hover:shadow-[0_0_30px_rgba(99,102,241,0.5)] hover:brightness-110"
               )}

@@ -71,6 +71,14 @@ const features = [
 
 const changelog = [
   {
+    version: "1.0.2",
+    date: "April 2026",
+    title: "Mount Button Fix",
+    changes: [
+      "Fixed Mount Mods button being disabled when only texture mods or archive & file mods are enabled",
+    ],
+  },
+  {
     version: "1.0.0",
     date: "April 2026",
     title: "Initial Release",

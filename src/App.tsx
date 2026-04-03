@@ -157,7 +157,7 @@ export default function App() {
 
   useEffect(() => {
     async function init() {
-      addLog("Definitive Mod Manager v1.0.1 loaded", "success");
+      addLog("Definitive Mod Manager v1.0.2 loaded", "success");
 
       // Determine app directory dynamically from exe location
       let appDir = "";
