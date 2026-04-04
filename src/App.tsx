@@ -34,7 +34,7 @@ interface PatchDetail {
 
 let NEXUS_API_KEY = "";
 
-const CURRENT_VERSION = "1.0.5b";
+const CURRENT_VERSION = "1.0.5c";
 const GITHUB_RELEASE_URL = "https://api.github.com/repos/exodiaprivate-eng/Definitive-Mod-Manager/releases/latest";
 
 const DEFAULT_CONFIG: AppConfig = {
@@ -183,7 +183,7 @@ export default function App() {
 
   useEffect(() => {
     async function init() {
-      addLog("Definitive Mod Manager v1.0.5b loaded", "success");
+      addLog("Definitive Mod Manager v1.0.5c loaded", "success");
 
       // Determine app directory dynamically from exe location
       let appDir = "";

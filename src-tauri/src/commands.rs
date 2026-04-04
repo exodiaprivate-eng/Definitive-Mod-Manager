@@ -1797,29 +1797,14 @@ pub fn apply_mods(
                 continue;
             }
 
-            // Determine flags based on file type to match base game expectations:
-            // 0x0002 = LZ4 compressed (pabgb, audio, data)
-            // 0x0030 = uncompressed text/UI (comp == decomp)
-            // 0x0032 = LZ4 compressed text/UI (comp < decomp)
-            // 0x0001 = uncompressed binary (DDS with comp == decomp)
-            let lower_fn = filename.to_lowercase();
-            let is_ui_file = lower_fn.ends_with(".css") || lower_fn.ends_with(".html")
-                || lower_fn.ends_with(".thtml") || lower_fn.ends_with(".xml");
-
+            // All overlay files use 0x0002 (LZ4 compressed) — the base game's 0x0030/0x0032
+            // flags indicate encryption which we don't apply. The game loads unencrypted
+            // LZ4 data from overlay groups just fine (same as pabgb files).
             let compressed = lz4::block::compress(raw_data, None, false)
                 .unwrap_or_else(|_| raw_data.to_vec());
-            let lz4_helps = compressed.len() < raw_data.len();
-
-            let (file_data, flags) = if is_ui_file {
-                if lz4_helps {
-                    (compressed, 0x0032u16)
-                } else {
-                    (raw_data.to_vec(), 0x0030u16)
-                }
-            } else if lz4_helps {
+            let (file_data, flags) = if compressed.len() < raw_data.len() {
                 (compressed, 0x0002u16)
             } else {
-                // Uncompressed — comp == decomp
                 (raw_data.to_vec(), 0x0000u16)
             };
 

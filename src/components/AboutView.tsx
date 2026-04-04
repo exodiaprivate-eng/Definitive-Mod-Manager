@@ -71,6 +71,15 @@ const features = [
 
 const changelog = [
   {
+    version: "1.0.5c",
+    date: "April 2026",
+    title: "File Replacement Hotfix — Encryption Flag Fix",
+    changes: [
+      "Fixed CSS/HTML/XML file replacement mods crashing the game — the 0x0030 flag in the base game means encryption, not file type. Overlay files now correctly use 0x0002 (plain LZ4) which the game loads without decryption",
+      "No Fog of War, Better Trade Menu, Minimap Tweaks, and all other file replacement mods now work correctly through the overlay system",
+    ],
+  },
+  {
     version: "1.0.5b",
     date: "April 2026",
     title: "File Replacement Fixes, PAZ Group Replace & ASI Folder Picker",
