@@ -71,6 +71,23 @@ const features = [
 
 const changelog = [
   {
+    version: "1.0.5b",
+    date: "April 2026",
+    title: "File Replacement Fixes, PAZ Group Replace & ASI Folder Picker",
+    changes: [
+      "Fixed file replacement mods (CSS/HTML/XML) — overlay now uses correct game flags (0x0032 for UI files) so the game actually loads them",
+      "PAZ group replacement — language and localization mods that replace entire PAZ groups (e.g. 0020/) are now fully supported with automatic backup and PAPGT CRC updates",
+      "Custom ASI mod folder — users can now select a custom folder for ASI mods instead of defaulting to bin64",
+      "Language mod folder — dedicated _language/ folder for folder-based language mods (PAZ group replacements), separate from the main mod library",
+      "Import Language Mod button now accepts folders and ZIP files in addition to JSON",
+      "Enable All / Disable All buttons now include texture, archive & file mods alongside JSON mods",
+      "Auto-refresh now detects version changes in mod manifests, not just folder name changes",
+      "Drag-and-drop now triggers language mod scan after import",
+      "Standalone overlay mods (like Axiom Bracelet) now work correctly alongside other file replacement mods",
+      "DDS texture overlays use correct uncompressed flags matching base game format",
+    ],
+  },
+  {
     version: "1.0.5",
     date: "April 2026",
     title: "Game Update Resilience, Pattern Scanner & Nuclear Unmount",

@@ -34,12 +34,13 @@ interface PatchDetail {
 
 let NEXUS_API_KEY = "";
 
-const CURRENT_VERSION = "1.0.5";
+const CURRENT_VERSION = "1.0.5b";
 const GITHUB_RELEASE_URL = "https://api.github.com/repos/exodiaprivate-eng/Definitive-Mod-Manager/releases/latest";
 
 const DEFAULT_CONFIG: AppConfig = {
   gamePath: "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Crimson Desert",
   modsPath: "",
+  asiModsPath: "",
   activeMods: [],
   activeAsiMods: [],
   activeTextures: [],
@@ -132,9 +133,11 @@ export default function App() {
     }
   }
 
+  const asiFolder = config.asiModsPath || null;
+
   async function scanAsiMods() {
     try {
-      const status = await invoke<AsiStatus>("scan_asi_mods", { gamePath: config.gamePath });
+      const status = await invoke<AsiStatus>("scan_asi_mods", { gamePath: config.gamePath, asiFolder });
       setAsiStatus(status);
       const count = status.plugins.length;
       if (count > 0) {
@@ -180,7 +183,7 @@ export default function App() {
 
   useEffect(() => {
     async function init() {
-      addLog("Definitive Mod Manager v1.0.5 loaded", "success");
+      addLog("Definitive Mod Manager v1.0.5b loaded", "success");
 
       // Determine app directory dynamically from exe location
       let appDir = "";
@@ -248,6 +251,9 @@ export default function App() {
         }
         if (!cfg.nexusApiKey) {
           cfg.nexusApiKey = NEXUS_API_KEY;
+        }
+        if (cfg.asiModsPath === undefined) {
+          cfg.asiModsPath = "";
         }
         setConfig(cfg);
         setConfigPath(myConfigPath);
@@ -351,13 +357,20 @@ export default function App() {
             try {
               if (ext === "asi" || ext === "dll") {
                 // ASI/DLL mod — install directly to game bin64
-                const installed = await invoke<string[]>("install_asi_mod", { sourcePath: filePath, gamePath: config.gamePath });
+                const installed = await invoke<string[]>("install_asi_mod", { sourcePath: filePath, gamePath: config.gamePath, asiFolder });
                 asiImported += installed.length;
                 addLog(`Installed ASI mod: ${installed.join(", ")}`, "success");
               } else if (ext === "zip") {
+                // Check if it's a language mod ZIP (contains group folders or _lang content)
+                const isLangZip = name.toLowerCase().includes("localization")
+                  || name.toLowerCase().includes("language")
+                  || name.toLowerCase().includes("translation");
                 await invoke("import_archive", { archivePath: filePath, modsPath: config.modsPath });
                 imported++;
                 addLog(`Imported archive: ${name}`, "success");
+                if (isLangZip) {
+                  scanLangMods();
+                }
               } else if (ext === "json") {
                 await invoke("import_mod", { sourcePath: filePath, modsPath: config.modsPath });
                 imported++;
@@ -366,7 +379,7 @@ export default function App() {
                 // Check if folder contains ASI files
                 const hasAsi = await invoke<boolean>("check_has_asi_files", { sourcePath: filePath });
                 if (hasAsi) {
-                  const installed = await invoke<string[]>("install_asi_mod", { sourcePath: filePath, gamePath: config.gamePath });
+                  const installed = await invoke<string[]>("install_asi_mod", { sourcePath: filePath, gamePath: config.gamePath, asiFolder });
                   asiImported += installed.length;
                   addLog(`Installed ASI mod: ${installed.join(", ")}`, "success");
                 } else {
@@ -388,6 +401,7 @@ export default function App() {
             scanMods();
             scanBrowserMods();
             scanTextureMods();
+            scanLangMods();
             if (asiImported > 0) scanAsiMods();
           }
         }
@@ -411,9 +425,9 @@ export default function App() {
       }).then((entries) => {
         setMods((prev) => {
           if (prev.length !== entries.length) return entries;
-          const prevNames = prev.map(m => m.file_name).sort().join(",");
-          const newNames = entries.map(m => m.file_name).sort().join(",");
-          if (prevNames !== newNames) return entries;
+          const prevKey = prev.map(m => `${m.file_name}:${m.version}`).sort().join(",");
+          const newKey = entries.map(m => `${m.file_name}:${m.version}`).sort().join(",");
+          if (prevKey !== newKey) return entries;
           return prev;
         });
       }).catch(() => {});
@@ -425,9 +439,10 @@ export default function App() {
         }).then((entries) => {
           setBrowserMods((prev) => {
             if (prev.length !== entries.length) return entries;
-            const prevNames = prev.map(m => m.folder_name).sort().join(",");
-            const newNames = entries.map(m => m.folder_name).sort().join(",");
-            if (prevNames !== newNames) return entries;
+            // Check folder names + versions for changes
+            const prevKey = prev.map(m => `${m.folder_name}:${m.version}`).sort().join(",");
+            const newKey = entries.map(m => `${m.folder_name}:${m.version}`).sort().join(",");
+            if (prevKey !== newKey) return entries;
             return prev;
           });
         }).catch(() => {});
@@ -437,9 +452,9 @@ export default function App() {
         }).then((entries) => {
           setTextureMods((prev) => {
             if (prev.length !== entries.length) return entries;
-            const prevNames = prev.map(m => m.folder_name).sort().join(",");
-            const newNames = entries.map(m => m.folder_name).sort().join(",");
-            if (prevNames !== newNames) return entries;
+            const prevKey = prev.map(m => `${m.folder_name}:${m.dds_count}`).sort().join(",");
+            const newKey = entries.map(m => `${m.folder_name}:${m.dds_count}`).sort().join(",");
+            if (prevKey !== newKey) return entries;
             return prev;
           });
         }).catch(() => {});
@@ -1371,12 +1386,14 @@ export default function App() {
       fileName: m.file_name,
       disabledIndices: [] as number[],
     }));
-    saveConfig({ ...config, activeMods: newActive });
-    toast.success(`Enabled all ${mods.length} mods`);
+    const allTextures = textureMods.map((t) => t.folder_name);
+    const allBrowser = browserMods.map((b) => b.folder_name);
+    saveConfig({ ...config, activeMods: newActive, activeTextures: allTextures, activeBrowserMods: allBrowser });
+    toast.success(`Enabled all mods`);
   }
 
   function disableAll() {
-    saveConfig({ ...config, activeMods: [] });
+    saveConfig({ ...config, activeMods: [], activeTextures: [], activeBrowserMods: [] });
     toast.success("Disabled all mods");
   }
 
@@ -1419,11 +1436,19 @@ export default function App() {
 
       // Build the full list of mods to apply (gameplay + language)
       let allActiveMods = [...config.activeMods];
+      const allBrowserMods = [...activeBrowserMods];
+
       if (config.activeLangMod) {
-        allActiveMods.push({
-          fileName: "_lang\\" + config.activeLangMod,
-          disabledIndices: [],
-        });
+        if (config.activeLangMod.startsWith("_language/")) {
+          // Folder-based language mod — add to browser mod folders for group replacement pipeline
+          allBrowserMods.push(config.activeLangMod);
+        } else {
+          // JSON language mod in _lang/
+          allActiveMods.push({
+            fileName: "_lang\\" + config.activeLangMod,
+            disabledIndices: [],
+          });
+        }
       }
 
       const result = await invoke<ApplyResult>("apply_mods", {
@@ -1431,7 +1456,7 @@ export default function App() {
         modsPath: config.modsPath,
         activeMods: allActiveMods,
         backupDir,
-        browserModFolders: activeBrowserMods.length > 0 ? activeBrowserMods : null,
+        browserModFolders: allBrowserMods.length > 0 ? allBrowserMods : null,
       });
 
       // Separate pattern scan info from real errors
@@ -1603,24 +1628,34 @@ export default function App() {
 
   async function importLangMod() {
     const selected = await open({
-      title: "Import Language Mod",
-      filters: [{ name: "JSON Language Mod", extensions: ["json"] }],
+      title: "Import Language Mod (file or folder)",
+      filters: [
+        { name: "Language Mods", extensions: ["json", "zip"] },
+        { name: "All Files", extensions: ["*"] },
+      ],
       multiple: false,
+      directory: true,
     });
     if (!selected) return;
 
-    try {
-      const source = selected as string;
-      const fileName = source.split(/[\\/]/).pop() || "";
-      const langDir = config.modsPath + "\\_lang";
+    const source = selected as string;
+    const name = source.split(/[\\/]/).pop() || "";
+    const ext = name.split(".").pop()?.toLowerCase();
 
-      // Ensure _lang directory exists
-      await invoke("import_mod", {
-        sourcePath: source,
-        modsPath: langDir,
-      });
-      toast.success(`Imported language mod "${fileName}"`);
+    try {
+      if (ext === "zip") {
+        await invoke("import_archive", { archivePath: source, modsPath: config.modsPath });
+        toast.success(`Imported language archive "${name}"`);
+      } else if (ext === "json") {
+        await invoke("import_mod", { sourcePath: source, modsPath: config.modsPath + "\\_lang" });
+        toast.success(`Imported language mod "${name}"`);
+      } else {
+        // Folder import
+        await invoke("import_folder", { sourcePath: source, modsPath: config.modsPath });
+        toast.success(`Imported language mod folder "${name}"`);
+      }
       scanLangMods();
+      scanBrowserMods();
     } catch (e) {
       toast.error(`Import failed: ${e}`);
     }
@@ -1642,7 +1677,7 @@ export default function App() {
 
   async function enableAsiMod(name: string) {
     try {
-      await invoke("enable_asi_mod", { gamePath: config.gamePath, pluginName: name });
+      await invoke("enable_asi_mod", { gamePath: config.gamePath, pluginName: name, asiFolder });
       addLog(`ASI enabled: ${name}`, "success");
       toast.success(`Enabled ASI: ${name}`);
       scanAsiMods();
@@ -1654,7 +1689,7 @@ export default function App() {
 
   async function disableAsiMod(name: string) {
     try {
-      await invoke("disable_asi_mod", { gamePath: config.gamePath, pluginName: name });
+      await invoke("disable_asi_mod", { gamePath: config.gamePath, pluginName: name, asiFolder });
       addLog(`ASI disabled: ${name}`, "info");
       toast.success(`Disabled ASI: ${name}`);
       scanAsiMods();
@@ -1680,6 +1715,7 @@ export default function App() {
       const installed = await invoke<string[]>("install_asi_mod", {
         sourcePath,
         gamePath: config.gamePath,
+        asiFolder,
       });
       addLog(`Installed ASI files: ${installed.join(", ")}`, "success");
       toast.success(`Installed ${installed.length} file(s)`);
@@ -1695,6 +1731,7 @@ export default function App() {
       const deleted = await invoke<string[]>("uninstall_asi_mod", {
         gamePath: config.gamePath,
         pluginName: name,
+        asiFolder,
       });
       addLog(`Uninstalled ASI: ${deleted.join(", ")}`, "info");
       toast.success(`Uninstalled: ${name}`);
@@ -1707,7 +1744,7 @@ export default function App() {
 
   async function openAsiConfig(name: string) {
     try {
-      await invoke("open_asi_config", { gamePath: config.gamePath, pluginName: name });
+      await invoke("open_asi_config", { gamePath: config.gamePath, pluginName: name, asiFolder });
     } catch (e) {
       addLog(`Failed to open ASI config: ${e}`, "error");
       toast.error(`Failed to open config: ${e}`);
@@ -1718,7 +1755,7 @@ export default function App() {
     setInstallingLoader(true);
     addLog("Downloading Ultimate ASI Loader...", "info");
     try {
-      const result = await invoke<string>("install_asi_loader", { gamePath: config.gamePath });
+      const result = await invoke<string>("install_asi_loader", { gamePath: config.gamePath, asiFolder });
       toast.success(result);
       addLog(result, "success");
       scanAsiMods();
@@ -1728,6 +1765,28 @@ export default function App() {
     } finally {
       setInstallingLoader(false);
     }
+  }
+
+  async function changeAsiFolder() {
+    const selected = await open({
+      title: "Select ASI Mods Folder",
+      directory: true,
+      multiple: false,
+    });
+    if (selected) {
+      const folder = selected as string;
+      addLog(`ASI folder changed to: ${folder}`, "info");
+      toast.success("ASI folder updated");
+      await saveConfig({ ...config, asiModsPath: folder });
+      scanAsiMods();
+    }
+  }
+
+  async function resetAsiFolder() {
+    addLog("ASI folder reset to default (bin64)", "info");
+    toast.success("ASI folder reset to default");
+    await saveConfig({ ...config, asiModsPath: "" });
+    scanAsiMods();
   }
 
   async function toggleReshade(enable: boolean) {
@@ -1862,6 +1921,7 @@ export default function App() {
                 browserMods={browserMods}
                 activeBrowserMods={activeBrowserMods}
                 onToggleBrowserMod={toggleBrowserMod}
+                activeLangMod={config.activeLangMod}
               />
             )}
             {view === "conflicts" && <ConflictView conflicts={conflicts} />}
@@ -1887,6 +1947,9 @@ export default function App() {
                 onOpenConfig={openAsiConfig}
                 onInstallLoader={installAsiLoader}
                 installingLoader={installingLoader}
+                asiModsPath={config.asiModsPath}
+                onChangeAsiFolder={changeAsiFolder}
+                onResetAsiFolder={resetAsiFolder}
               />
             )}
             {view === "reshade" && (

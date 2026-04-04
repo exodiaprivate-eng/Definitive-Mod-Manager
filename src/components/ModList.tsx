@@ -62,6 +62,7 @@ interface ModListProps {
   browserMods?: BrowserModEntry[];
   activeBrowserMods?: string[];
   onToggleBrowserMod?: (folderName: string) => void;
+  activeLangMod?: string | null;
 }
 
 export function ModList({
@@ -92,6 +93,7 @@ export function ModList({
   browserMods = [],
   activeBrowserMods = [],
   onToggleBrowserMod,
+  activeLangMod,
 }: ModListProps) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<FilterMode>("all");
@@ -109,7 +111,7 @@ export function ModList({
   });
 
   const activeCount = mods.filter((m) => m.enabled).length;
-  const totalActiveCount = activeCount + activeTextures.length + activeBrowserMods.length;
+  const totalActiveCount = activeCount + activeTextures.length + activeBrowserMods.length + (activeLangMod ? 1 : 0);
   const outdatedMods = Object.values(updateStatuses).filter((s) => s.is_outdated);
   const outdatedCount = outdatedMods.length;
 

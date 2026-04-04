@@ -1,6 +1,6 @@
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
-import { Plug, Settings2, Trash2, Download, AlertTriangle, Check, RefreshCw } from "lucide-react";
+import { Plug, Settings2, Trash2, Download, AlertTriangle, Check, RefreshCw, FolderOpen } from "lucide-react";
 import type { AsiStatus } from "@/types";
 
 interface AsiModViewProps {
@@ -13,6 +13,9 @@ interface AsiModViewProps {
   onOpenConfig: (name: string) => void;
   onInstallLoader: () => void;
   installingLoader?: boolean;
+  asiModsPath?: string;
+  onChangeAsiFolder: () => void;
+  onResetAsiFolder: () => void;
 }
 
 export function AsiModView({
@@ -25,6 +28,9 @@ export function AsiModView({
   onOpenConfig,
   onInstallLoader,
   installingLoader = false,
+  asiModsPath,
+  onChangeAsiFolder,
+  onResetAsiFolder,
 }: AsiModViewProps) {
   const plugins = asiStatus?.plugins ?? [];
   const enabledCount = plugins.filter((p) => p.enabled).length;
@@ -54,6 +60,31 @@ export function AsiModView({
               Install ASI Mod
             </button>
           </div>
+        </div>
+
+        {/* ASI Folder path */}
+        <div className="flex items-center gap-3">
+          <FolderOpen className="w-4 h-4 text-text-muted shrink-0" />
+          <span className="text-xs text-text-muted truncate flex-1" title={asiModsPath || "Default: bin64"}>
+            {asiModsPath || "Default: game/bin64"}
+          </span>
+          <button
+            onClick={onChangeAsiFolder}
+            style={{ padding: "4px 10px", fontSize: "11px" }}
+            className="flex items-center gap-1.5 font-medium text-text-secondary bg-white/[0.03] border border-border/60 rounded-sm hover:bg-white/[0.06] hover:border-border-hover transition-all shrink-0"
+          >
+            <FolderOpen className="w-3 h-3" />
+            Change
+          </button>
+          {asiModsPath && (
+            <button
+              onClick={onResetAsiFolder}
+              style={{ padding: "4px 10px", fontSize: "11px" }}
+              className="font-medium text-text-muted bg-white/[0.03] border border-border/60 rounded-sm hover:bg-white/[0.06] hover:border-border-hover transition-all shrink-0"
+            >
+              Reset
+            </button>
+          )}
         </div>
 
         {/* Summary + Loader status */}

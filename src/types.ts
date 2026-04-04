@@ -32,6 +32,7 @@ export interface ActiveMod {
 export interface AppConfig {
   gamePath: string;
   modsPath: string;
+  asiModsPath: string;
   activeMods: ActiveMod[];
   activeAsiMods: string[];
   activeTextures: string[];

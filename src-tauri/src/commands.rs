@@ -4,7 +4,7 @@ use sha2::{Sha256, Digest};
 use std::collections::HashMap;
 use std::fs;
 use std::io::Read as IoRead;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1284,6 +1284,10 @@ pub fn apply_mods(
     let mut standalone_paz_data: Option<Vec<u8>> = None;
     let mut standalone_pamt_data: Option<Vec<u8>> = None;
 
+    // PAZ group replacement mods: replace existing vanilla groups (e.g. 0020 for language mods)
+    // Stored as (group_name, paz_data, pamt_data) for deferred application
+    let mut group_replacements: Vec<(String, PathBuf, PathBuf)> = Vec::new();
+
     if let Some(ref folders) = browser_mod_folders {
         let mods_dir = Path::new(&mods_path);
         for folder_name in folders {
@@ -1298,7 +1302,6 @@ pub fn apply_mods(
                 let pamt = fs::read(&standalone_pamt)
                     .map_err(|e| format!("Failed to read standalone PAMT from {}: {}", folder_name, e))?;
 
-                // If we already have standalone data, append (concatenate PAZ, use latest PAMT)
                 if let Some(ref mut existing_paz) = standalone_paz_data {
                     existing_paz.extend_from_slice(&paz);
                     standalone_pamt_data = Some(pamt);
@@ -1308,7 +1311,29 @@ pub fn apply_mods(
                 }
 
                 result.applied.push(folder_name.clone());
-                continue; // Don't process as a regular browser mod
+                continue;
+            }
+
+            // Check for PAZ group replacement mod (e.g. 0020/0.paz + 0020/0.pamt)
+            {
+                let mut found_group = false;
+                if let Ok(sub_entries) = fs::read_dir(&mod_dir) {
+                    for sub_entry in sub_entries.flatten() {
+                        let sub_name = sub_entry.file_name().to_string_lossy().to_string();
+                        if sub_name.len() == 4 && sub_name.chars().all(|c| c.is_ascii_digit()) && sub_name != "0036" {
+                            let group_paz = sub_entry.path().join("0.paz");
+                            let group_pamt = sub_entry.path().join("0.pamt");
+                            if group_paz.exists() && group_pamt.exists() {
+                                group_replacements.push((sub_name, group_paz, group_pamt));
+                                found_group = true;
+                            }
+                        }
+                    }
+                }
+                if found_group {
+                    result.applied.push(folder_name.clone());
+                    continue;
+                }
             }
 
             let before = browser_overlay_files.len();
@@ -1350,7 +1375,8 @@ pub fn apply_mods(
     let has_standalone = standalone_paz_data.is_some();
 
     // === STANDALONE OVERLAY MOD PIPELINE ===
-    // If a standalone mod provides pre-built 0036/ files, copy them directly
+    // Only runs when no other browser/pabgb mods need the 0036 overlay
+    // When mixed with other mods, standalone data is merged into the multi-file pipeline instead
     if has_standalone && pabgb_patches.is_empty() && !has_browser_mods {
         let overlay_dir = Path::new(&game_path).join("0036");
         let papgt_path = Path::new(&game_path).join("meta").join("0.papgt");
@@ -1388,6 +1414,122 @@ pub fn apply_mods(
             .map_err(|e| format!("Failed to write PAPGT: {}", e))?;
 
         log::info!("Standalone overlay mod mounted: {} bytes PAZ, {} bytes PAMT", paz.len(), pamt.len());
+    }
+
+    // === PAZ GROUP REPLACEMENT PIPELINE ===
+    // Replace existing vanilla PAZ groups (e.g. 0020 for language mods)
+    if !group_replacements.is_empty() {
+        let papgt_path = Path::new(&game_path).join("meta").join("0.papgt");
+
+        // Backup PAPGT if not already backed up
+        let papgt_backup = backup_path.join("papgt_clean.bin");
+        if !papgt_backup.exists() && papgt_path.exists() {
+            fs::copy(&papgt_path, &papgt_backup)
+                .map_err(|e| format!("Failed to backup PAPGT: {}", e))?;
+        }
+
+        for (group_name, mod_paz_path, mod_pamt_path) in &group_replacements {
+            let group_dir = Path::new(&game_path).join(group_name);
+
+            if !group_dir.exists() {
+                result.errors.push(format!("Game group directory not found: {}", group_name));
+                continue;
+            }
+
+            let orig_paz = group_dir.join("0.paz");
+            let orig_pamt = group_dir.join("0.pamt");
+
+            // Backup original group files
+            let paz_backup_name = format!("{}_0.paz.original", group_name);
+            let pamt_backup_name = format!("{}_0.pamt.original", group_name);
+            let paz_bak = backup_path.join(&paz_backup_name);
+            let pamt_bak = backup_path.join(&pamt_backup_name);
+
+            if !paz_bak.exists() && orig_paz.exists() {
+                fs::copy(&orig_paz, &paz_bak)
+                    .map_err(|e| format!("Failed to backup {}/0.paz: {}", group_name, e))?;
+            }
+            if !pamt_bak.exists() && orig_pamt.exists() {
+                fs::copy(&orig_pamt, &pamt_bak)
+                    .map_err(|e| format!("Failed to backup {}/0.pamt: {}", group_name, e))?;
+            }
+            result.backup_created = true;
+
+            // Copy mod's replacement files
+            fs::copy(mod_paz_path, &orig_paz)
+                .map_err(|e| format!("Failed to copy replacement PAZ for {}: {}", group_name, e))?;
+            fs::copy(mod_pamt_path, &orig_pamt)
+                .map_err(|e| format!("Failed to copy replacement PAMT for {}: {}", group_name, e))?;
+
+            log::info!("Group replacement mounted: {}/0.paz ({} bytes)", group_name, fs::metadata(&orig_paz).map(|m| m.len()).unwrap_or(0));
+        }
+
+        // If the mod ships its own meta/0.papgt, use it directly (has correct CRCs)
+        // Check in each mod folder that contributed group replacements
+        let mut used_mod_papgt = false;
+        if let Some(ref folders) = browser_mod_folders {
+            let mods_dir = Path::new(&mods_path);
+            for folder_name in folders {
+                let mod_papgt = mods_dir.join(folder_name).join("meta").join("0.papgt");
+                if mod_papgt.exists() {
+                    fs::copy(&mod_papgt, &papgt_path)
+                        .map_err(|e| format!("Failed to copy mod PAPGT: {}", e))?;
+                    used_mod_papgt = true;
+                    log::info!("Using mod-provided PAPGT from {}", folder_name);
+                    break;
+                }
+            }
+        }
+
+        // If no mod PAPGT, compute CRCs manually
+        if !used_mod_papgt {
+            let mut papgt_data = fs::read(&papgt_path)
+                .map_err(|e| format!("Failed to read PAPGT: {}", e))?;
+
+            // Find names block start
+            let mut found_names_start = 0usize;
+            for i in 12..papgt_data.len().saturating_sub(5) {
+                if &papgt_data[i..i+5] == b"0000\0" {
+                    found_names_start = i;
+                    break;
+                }
+            }
+
+            if found_names_start > 12 {
+                let num_entries = (found_names_start - 12) / 12;
+
+                for (group_name, _, mod_pamt_path) in &group_replacements {
+                    let new_pamt = fs::read(mod_pamt_path)
+                        .map_err(|e| format!("Failed to read PAMT for {}: {}", group_name, e))?;
+                    if new_pamt.len() < 13 { continue; }
+                    let new_pamt_crc = hashlittle(&new_pamt[12..], INTEGRITY_SEED);
+
+                    for e in 0..num_entries {
+                        let off = 12 + e * 12;
+                        let name_offset_val = u32::from_le_bytes([
+                            papgt_data[off + 4], papgt_data[off + 5],
+                            papgt_data[off + 6], papgt_data[off + 7],
+                        ]) as usize;
+
+                        let ns = found_names_start + name_offset_val;
+                        if ns + group_name.len() >= papgt_data.len() { continue; }
+                        let ne = papgt_data[ns..].iter().position(|&b| b == 0).map(|p| p + ns).unwrap_or(ns);
+                        let entry_name = std::str::from_utf8(&papgt_data[ns..ne]).unwrap_or("");
+                        if entry_name == group_name.as_str() {
+                            papgt_data[off + 8..off + 12].copy_from_slice(&new_pamt_crc.to_le_bytes());
+                            break;
+                        }
+                    }
+                }
+
+                // Recompute PAPGT header CRC (stored at bytes 4-7)
+                let header_crc = hashlittle(&papgt_data[12..], INTEGRITY_SEED);
+                papgt_data[4..8].copy_from_slice(&header_crc.to_le_bytes());
+
+                fs::write(&papgt_path, &papgt_data)
+                    .map_err(|e| format!("Failed to write updated PAPGT: {}", e))?;
+            }
+        }
     }
 
     // === MULTI-FILE PAZ OVERLAY PIPELINE ===
@@ -1428,6 +1570,17 @@ pub fn apply_mods(
         let mut overlay_files: Vec<OverlayFileInfo> = Vec::new();
         let mut paz_data: Vec<u8> = Vec::new();
         let mut had_pabgb_error = false;
+
+        // If standalone overlay data exists, prepend it to the combined PAZ
+        // and mark that we need to use the standalone PAMT as the base
+        let mut use_standalone_pamt = false;
+        if let (Some(ref s_paz), Some(ref _s_pamt)) = (&standalone_paz_data, &standalone_pamt_data) {
+            paz_data.extend_from_slice(s_paz);
+            let padded = (paz_data.len() + 15) & !15;
+            paz_data.resize(padded, 0);
+            use_standalone_pamt = true;
+        }
+
 
         // Sort pabgb_patches for deterministic output
         pabgb_patches.sort_by(|a, b| a.0.cmp(&b.0));
@@ -1644,14 +1797,37 @@ pub fn apply_mods(
                 continue;
             }
 
+            // Determine flags based on file type to match base game expectations:
+            // 0x0002 = LZ4 compressed (pabgb, audio, data)
+            // 0x0030 = uncompressed text/UI (comp == decomp)
+            // 0x0032 = LZ4 compressed text/UI (comp < decomp)
+            // 0x0001 = uncompressed binary (DDS with comp == decomp)
+            let lower_fn = filename.to_lowercase();
+            let is_ui_file = lower_fn.ends_with(".css") || lower_fn.ends_with(".html")
+                || lower_fn.ends_with(".thtml") || lower_fn.ends_with(".xml");
+
             let compressed = lz4::block::compress(raw_data, None, false)
                 .unwrap_or_else(|_| raw_data.to_vec());
+            let lz4_helps = compressed.len() < raw_data.len();
+
+            let (file_data, flags) = if is_ui_file {
+                if lz4_helps {
+                    (compressed, 0x0032u16)
+                } else {
+                    (raw_data.to_vec(), 0x0030u16)
+                }
+            } else if lz4_helps {
+                (compressed, 0x0002u16)
+            } else {
+                // Uncompressed — comp == decomp
+                (raw_data.to_vec(), 0x0000u16)
+            };
 
             let paz_offset = paz_data.len() as u32;
-            let comp_size = compressed.len() as u32;
+            let comp_size = file_data.len() as u32;
             let decomp_size = raw_data.len() as u32;
 
-            paz_data.extend_from_slice(&compressed);
+            paz_data.extend_from_slice(&file_data);
             let padded_size = (paz_data.len() + 15) & !15;
             paz_data.resize(padded_size, 0);
 
@@ -1662,16 +1838,24 @@ pub fn apply_mods(
                 paz_offset,
                 comp_size,
                 decomp_size,
-                flags: 0x0002,
+                flags,
             });
         }
 
-        if had_pabgb_error && overlay_files.is_empty() {
-            // All files failed, skip overlay writing
-        } else if !overlay_files.is_empty() {
-            // Build the multi-file PAMT
-            let paz_total_len = paz_data.len() as u32;
-            let mut new_pamt = build_multi_pamt(&overlay_files, paz_total_len);
+        if had_pabgb_error && overlay_files.is_empty() && !use_standalone_pamt {
+            // All files failed and no standalone data, skip overlay writing
+        } else if !overlay_files.is_empty() || use_standalone_pamt {
+            let mut new_pamt;
+
+            if use_standalone_pamt && overlay_files.is_empty() {
+                // Standalone data only, no multi-file entries
+                new_pamt = standalone_pamt_data.clone().unwrap();
+            } else {
+                // Build multi-file PAMT (overlay_files have correct offsets since
+                // paz_data was pre-filled with standalone data before they were appended)
+                let paz_total_len = paz_data.len() as u32;
+                new_pamt = build_multi_pamt(&overlay_files, paz_total_len);
+            }
 
             // Write PAZ to overlay directory
             fs::write(&overlay_paz, &paz_data)
@@ -1873,6 +2057,34 @@ pub fn revert_mods(game_path: String, backup_dir: String) -> Result<Vec<String>,
     if overlay_dir.exists() {
         fs::remove_dir_all(&overlay_dir).ok();
         restored.push("Removed: 0036/ overlay directory".to_string());
+    }
+
+    // 3b. Restore any PAZ group replacements (e.g. 0020_0.paz.original)
+    if let Ok(backup_entries) = fs::read_dir(backup_path) {
+        for entry in backup_entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Match pattern: XXXX_0.paz.original or XXXX_0.pamt.original
+            if name.ends_with("_0.paz.original") {
+                let group = &name[..4];
+                let target = game.join(group).join("0.paz");
+                if target.parent().map(|p| p.exists()).unwrap_or(false) {
+                    if fs::copy(entry.path(), &target).is_ok() {
+                        restored.push(format!("Restored: {}/0.paz", group));
+                    }
+                }
+                // Clean up the backup
+                fs::remove_file(entry.path()).ok();
+            } else if name.ends_with("_0.pamt.original") {
+                let group = &name[..4];
+                let target = game.join(group).join("0.pamt");
+                if target.parent().map(|p| p.exists()).unwrap_or(false) {
+                    if fs::copy(entry.path(), &target).is_ok() {
+                        restored.push(format!("Restored: {}/0.pamt", group));
+                    }
+                }
+                fs::remove_file(entry.path()).ok();
+            }
+        }
     }
 
     // 4. Clean meta/ — remove anything that isn't vanilla
@@ -2295,45 +2507,93 @@ pub struct LangModEntry {
 
 #[tauri::command]
 pub fn scan_lang_mods(mods_path: String, active_lang_mod: Option<String>) -> Result<Vec<LangModEntry>, String> {
-    let lang_dir = Path::new(&mods_path).join("_lang");
+    let mods_dir = Path::new(&mods_path);
+    let lang_dir = mods_dir.join("_lang");
     if !lang_dir.exists() {
         fs::create_dir_all(&lang_dir)
             .map_err(|e| format!("Failed to create _lang directory: {}", e))?;
-        return Ok(Vec::new());
     }
 
     let mut entries = Vec::new();
-    let read_dir = fs::read_dir(&lang_dir)
-        .map_err(|e| format!("Failed to read _lang directory: {}", e))?;
 
-    for entry in read_dir {
-        let entry = entry.map_err(|e| format!("Dir entry error: {}", e))?;
-        let path = entry.path();
+    // Scan _lang/ for JSON language mods
+    if let Ok(read_dir) = fs::read_dir(&lang_dir) {
+        for entry in read_dir {
+            let entry = entry.map_err(|e| format!("Dir entry error: {}", e))?;
+            let path = entry.path();
 
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+
+            let file_name = path.file_name().unwrap().to_string_lossy().to_string();
+
+            match parse_mod_file(&path) {
+                Ok(mod_file) => {
+                    let (title, _version, author, description) = get_mod_display_info(&mod_file);
+                    let language = title.to_lowercase();
+                    let active = active_lang_mod.as_deref() == Some(&file_name);
+
+                    entries.push(LangModEntry {
+                        file_name,
+                        title,
+                        language,
+                        author,
+                        description,
+                        active,
+                    });
+                }
+                Err(e) => {
+                    log::warn!("Skipping lang mod {}: {}", file_name, e);
+                }
+            }
         }
+    }
 
-        let file_name = path.file_name().unwrap().to_string_lossy().to_string();
+    // Scan _language/ for folder-based language mods (PAZ group replacements)
+    let language_dir = mods_dir.join("_language");
+    if !language_dir.exists() {
+        fs::create_dir_all(&language_dir).ok();
+    }
+    if let Ok(read_dir) = fs::read_dir(&language_dir) {
+        for entry in read_dir.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if !path.is_dir() { continue; }
 
-        match parse_mod_file(&path) {
-            Ok(mod_file) => {
-                let (title, _version, author, description) = get_mod_display_info(&mod_file);
-                let language = title.to_lowercase();
-                let active = active_lang_mod.as_deref() == Some(&file_name);
+            let folder_name = entry.file_name().to_string_lossy().to_string();
 
-                entries.push(LangModEntry {
-                    file_name,
-                    title,
-                    language,
-                    author,
-                    description,
-                    active,
-                });
+            // Check for group folders with PAZ/PAMT inside
+            let mut has_group = false;
+            if let Ok(sub_rd) = fs::read_dir(&path) {
+                for sub in sub_rd.filter_map(|e| e.ok()) {
+                    let sub_name = sub.file_name().to_string_lossy().to_string();
+                    if sub_name.len() == 4 && sub_name.chars().all(|c| c.is_ascii_digit()) {
+                        let paz = sub.path().join("0.paz");
+                        let pamt = sub.path().join("0.pamt");
+                        if paz.exists() && pamt.exists() {
+                            has_group = true;
+                            break;
+                        }
+                    }
+                }
             }
-            Err(e) => {
-                log::warn!("Skipping lang mod {}: {}", file_name, e);
-            }
+            if !has_group { continue; }
+
+            let modinfo_path = path.join("modinfo.json");
+            let (title, _version, author, description) = read_modinfo(&modinfo_path, &folder_name);
+            let language = title.to_lowercase();
+            // Folder-based lang mods use _language/FolderName as their identifier
+            let lang_id = format!("_language/{}", folder_name);
+            let active = active_lang_mod.as_deref() == Some(&lang_id);
+
+            entries.push(LangModEntry {
+                file_name: lang_id,
+                title,
+                language,
+                author,
+                description,
+                active,
+            });
         }
     }
 
@@ -4363,8 +4623,11 @@ pub struct AsiStatus {
 }
 
 #[tauri::command]
-pub fn scan_asi_mods(game_path: String) -> Result<AsiStatus, String> {
-    let bin64 = Path::new(&game_path).join("bin64");
+pub fn scan_asi_mods(game_path: String, asi_folder: Option<String>) -> Result<AsiStatus, String> {
+    let bin64 = asi_folder.as_ref()
+        .filter(|s| !s.is_empty())
+        .map(|s| PathBuf::from(s))
+        .unwrap_or_else(|| Path::new(&game_path).join("bin64"));
     if !bin64.exists() {
         return Ok(AsiStatus {
             has_loader: false,
@@ -4448,8 +4711,11 @@ fn find_asi_ini(bin64: &Path, base_name: &str) -> Option<std::path::PathBuf> {
 }
 
 #[tauri::command]
-pub fn enable_asi_mod(game_path: String, plugin_name: String) -> Result<(), String> {
-    let bin64 = Path::new(&game_path).join("bin64");
+pub fn enable_asi_mod(game_path: String, plugin_name: String, asi_folder: Option<String>) -> Result<(), String> {
+    let bin64 = asi_folder.as_ref()
+        .filter(|s| !s.is_empty())
+        .map(|s| PathBuf::from(s))
+        .unwrap_or_else(|| Path::new(&game_path).join("bin64"));
     let disabled = bin64.join(format!("{}.asi.disabled", plugin_name));
     let enabled = bin64.join(format!("{}.asi", plugin_name));
 
@@ -4464,8 +4730,11 @@ pub fn enable_asi_mod(game_path: String, plugin_name: String) -> Result<(), Stri
 }
 
 #[tauri::command]
-pub fn disable_asi_mod(game_path: String, plugin_name: String) -> Result<(), String> {
-    let bin64 = Path::new(&game_path).join("bin64");
+pub fn disable_asi_mod(game_path: String, plugin_name: String, asi_folder: Option<String>) -> Result<(), String> {
+    let bin64 = asi_folder.as_ref()
+        .filter(|s| !s.is_empty())
+        .map(|s| PathBuf::from(s))
+        .unwrap_or_else(|| Path::new(&game_path).join("bin64"));
     let enabled = bin64.join(format!("{}.asi", plugin_name));
     let disabled = bin64.join(format!("{}.asi.disabled", plugin_name));
 
@@ -4480,8 +4749,11 @@ pub fn disable_asi_mod(game_path: String, plugin_name: String) -> Result<(), Str
 }
 
 #[tauri::command]
-pub fn install_asi_mod(source_path: String, game_path: String) -> Result<Vec<String>, String> {
-    let bin64 = Path::new(&game_path).join("bin64");
+pub fn install_asi_mod(source_path: String, game_path: String, asi_folder: Option<String>) -> Result<Vec<String>, String> {
+    let bin64 = asi_folder.as_ref()
+        .filter(|s| !s.is_empty())
+        .map(|s| PathBuf::from(s))
+        .unwrap_or_else(|| Path::new(&game_path).join("bin64"));
     fs::create_dir_all(&bin64).map_err(|e| format!("Failed to create bin64: {}", e))?;
 
     let source = Path::new(&source_path);
@@ -4547,8 +4819,11 @@ pub fn install_asi_mod(source_path: String, game_path: String) -> Result<Vec<Str
 }
 
 #[tauri::command]
-pub fn uninstall_asi_mod(game_path: String, plugin_name: String) -> Result<Vec<String>, String> {
-    let bin64 = Path::new(&game_path).join("bin64");
+pub fn uninstall_asi_mod(game_path: String, plugin_name: String, asi_folder: Option<String>) -> Result<Vec<String>, String> {
+    let bin64 = asi_folder.as_ref()
+        .filter(|s| !s.is_empty())
+        .map(|s| PathBuf::from(s))
+        .unwrap_or_else(|| Path::new(&game_path).join("bin64"));
     let mut deleted: Vec<String> = Vec::new();
 
     // Delete the .asi or .asi.disabled file
@@ -4586,8 +4861,11 @@ pub fn uninstall_asi_mod(game_path: String, plugin_name: String) -> Result<Vec<S
 }
 
 #[tauri::command]
-pub fn open_asi_config(game_path: String, plugin_name: String) -> Result<(), String> {
-    let bin64 = Path::new(&game_path).join("bin64");
+pub fn open_asi_config(game_path: String, plugin_name: String, asi_folder: Option<String>) -> Result<(), String> {
+    let bin64 = asi_folder.as_ref()
+        .filter(|s| !s.is_empty())
+        .map(|s| PathBuf::from(s))
+        .unwrap_or_else(|| Path::new(&game_path).join("bin64"));
     let ini_path = find_asi_ini(&bin64, &plugin_name)
         .ok_or_else(|| format!("No INI config found for {}", plugin_name))?;
 
@@ -4603,8 +4881,11 @@ pub fn open_asi_config(game_path: String, plugin_name: String) -> Result<(), Str
 const EMBEDDED_ASI_LOADER: &[u8] = include_bytes!("../asi_loader.dll");
 
 #[tauri::command]
-pub fn install_asi_loader(game_path: String) -> Result<String, String> {
-    let bin64 = Path::new(&game_path).join("bin64");
+pub fn install_asi_loader(game_path: String, asi_folder: Option<String>) -> Result<String, String> {
+    let bin64 = asi_folder.as_ref()
+        .filter(|s| !s.is_empty())
+        .map(|s| PathBuf::from(s))
+        .unwrap_or_else(|| Path::new(&game_path).join("bin64"));
     if !bin64.exists() {
         return Err("bin64 directory not found".to_string());
     }
@@ -5842,6 +6123,22 @@ fn is_paz_group_dir(name: &str) -> bool {
     name.len() == 4 && name.chars().all(|c| c.is_ascii_digit())
 }
 
+fn read_modinfo(modinfo_path: &Path, fallback_name: &str) -> (String, String, String, String) {
+    if modinfo_path.exists() {
+        if let Ok(data) = fs::read_to_string(modinfo_path) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
+                return (
+                    v.get("name").and_then(|v| v.as_str()).unwrap_or(fallback_name).to_string(),
+                    v.get("version").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    v.get("author").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string(),
+                    v.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                );
+            }
+        }
+    }
+    (fallback_name.to_string(), String::new(), "Unknown".to_string(), String::new())
+}
+
 #[tauri::command]
 pub fn scan_browser_mods(mods_path: String) -> Result<Vec<BrowserModEntry>, String> {
     let mods_dir = Path::new(&mods_path);
@@ -5862,23 +6159,12 @@ pub fn scan_browser_mods(mods_path: String) -> Result<Vec<BrowserModEntry>, Stri
         let folder_name = path.file_name().unwrap().to_string_lossy().to_string();
 
         // --- Case 0: Standalone overlay mod (ships pre-built 0036/ PAZ/PAMT) ---
+        // Also detects PAZ group replacement mods (e.g. 0020/0.paz for language mods)
         let standalone_paz = path.join("0036").join("0.paz");
         let standalone_pamt = path.join("0036").join("0.pamt");
         if standalone_paz.exists() && standalone_pamt.exists() {
-            // Read modinfo.json if present
             let modinfo_path = path.join("modinfo.json");
-            let (title, version, author, description) = if modinfo_path.exists() {
-                if let Ok(data) = fs::read_to_string(&modinfo_path) {
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
-                        (
-                            v.get("name").and_then(|v| v.as_str()).unwrap_or(&folder_name).to_string(),
-                            v.get("version").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                            v.get("author").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string(),
-                            v.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                        )
-                    } else { (folder_name.clone(), String::new(), "Unknown".to_string(), String::new()) }
-                } else { (folder_name.clone(), String::new(), "Unknown".to_string(), String::new()) }
-            } else { (folder_name.clone(), String::new(), "Unknown".to_string(), String::new()) };
+            let (title, version, author, description) = read_modinfo(&modinfo_path, &folder_name);
 
             if !seen_folders.contains(&folder_name) {
                 seen_folders.insert(folder_name.clone());
@@ -5894,6 +6180,44 @@ pub fn scan_browser_mods(mods_path: String) -> Result<Vec<BrowserModEntry>, Stri
                 });
             }
             continue;
+        }
+
+        // --- Case 0b: PAZ group replacement mod (e.g. 0020/0.paz + 0020/0.pamt) ---
+        // Detects mods that replace an existing vanilla PAZ group.
+        {
+            let mut found_group_replace = false;
+            if let Ok(sub_entries) = fs::read_dir(&path) {
+                for sub_entry in sub_entries.flatten() {
+                    let sub_name = sub_entry.file_name().to_string_lossy().to_string();
+                    if sub_name.len() == 4 && sub_name.chars().all(|c| c.is_ascii_digit()) && sub_name != "0036" {
+                        let group_paz = sub_entry.path().join("0.paz");
+                        let group_pamt = sub_entry.path().join("0.pamt");
+                        if group_paz.exists() && group_pamt.exists() {
+                            found_group_replace = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if found_group_replace {
+                let modinfo_path = path.join("modinfo.json");
+                let (title, version, author, description) = read_modinfo(&modinfo_path, &folder_name);
+
+                if !seen_folders.contains(&folder_name) {
+                    seen_folders.insert(folder_name.clone());
+                    entries.push(BrowserModEntry {
+                        folder_name: folder_name.clone(),
+                        title,
+                        author,
+                        version,
+                        description,
+                        file_count: 2,
+                        enabled: false,
+                        mod_type: "group replace".to_string(),
+                    });
+                }
+                continue;
+            }
         }
 
         // --- Case 1: Manifest-based mod ---
