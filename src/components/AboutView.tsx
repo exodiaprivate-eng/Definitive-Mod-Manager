@@ -71,6 +71,23 @@ const features = [
 
 const changelog = [
   {
+    version: "1.0.5",
+    date: "April 2026",
+    title: "Game Update Resilience, Pattern Scanner & Nuclear Unmount",
+    changes: [
+      "Pattern scan engine — when a game update shifts byte offsets, DMM automatically scans for the original bytes and patches at the new location. Mods survive game updates without needing author updates",
+      "Short-pattern support — even 2-byte patches (like inventory slot values) are relocated via windowed proximity scan (±512 bytes around the original offset)",
+      "Nuclear unmount — compares bin64/ against a vanilla manifest and removes ALL non-vanilla files on unmount. ASI files are moved to staging instead of deleted",
+      "Game update detection — computes SHA256 of PAPGT on startup and compares to stored hash. Automatically invalidates stale caches and refreshes backups when the game updates",
+      "PAPGT validation — detects tainted PAPGT files containing overlay entries from other tools. Shows a 'Restore Vanilla' button in the sidebar",
+      "Restore Vanilla command — strips 0036 overlay entry from PAPGT, removes orphaned name strings, adjusts all name offsets, and recomputes header CRC",
+      "Standalone overlay mod support — mods shipping pre-built 0036/0.paz + 0036/0.pamt are auto-detected and mounted directly",
+      "ASI folder detection — scans subdirectories in the mods folder for .asi files and installs them automatically",
+      "Modded game warning banner — sidebar shows warning with Restore Vanilla button when PAPGT has been modified by another tool",
+      "Confirmed working with Crimson Desert v1.02.00 — overlay system, JSON byte patches, texture mods, and ASI mods all verified",
+    ],
+  },
+  {
     version: "1.0.4b",
     date: "April 2026",
     title: "Hotfix — Card Style, Unmount & Backup Fixes",

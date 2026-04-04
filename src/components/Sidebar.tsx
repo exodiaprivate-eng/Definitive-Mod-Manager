@@ -28,6 +28,9 @@ interface SidebarProps {
   asiCount?: number;
   onOpenModsFolder: () => void;
   onOpenGameFolder: () => void;
+  showModdedWarning?: boolean;
+  onRestoreVanilla?: () => void;
+  restoringVanilla?: boolean;
 }
 
 interface NavItemProps {
@@ -75,7 +78,7 @@ function NavItem({ icon, label, active, onClick, badge, badgeColor, disabled }: 
   );
 }
 
-export function Sidebar({ activeView, onViewChange, modCount, activeCount, conflictCount, asiCount, onOpenModsFolder, onOpenGameFolder }: SidebarProps) {
+export function Sidebar({ activeView, onViewChange, modCount, activeCount, conflictCount, asiCount, onOpenModsFolder, onOpenGameFolder, showModdedWarning, onRestoreVanilla, restoringVanilla }: SidebarProps) {
   return (
     <div className="w-64 h-full sidebar-bg border border-border/30 flex flex-col shrink-0">
       <div className="px-4 pt-8 pb-4 flex-1">
@@ -179,6 +182,28 @@ export function Sidebar({ activeView, onViewChange, modCount, activeCount, confl
           </div>
         </div>
       </div>
+
+      {/* Modded game warning */}
+      {showModdedWarning && (
+        <div className="mx-4 mb-3 px-4 py-3 rounded-sm border border-warning/30 bg-warning/5" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+          <p className="text-xs text-warning leading-relaxed">
+            DMM detected your game was previously modded. Press the button below to restore to vanilla.
+          </p>
+          <button
+            onClick={onRestoreVanilla}
+            disabled={restoringVanilla}
+            className={cn(
+              "w-full flex items-center justify-center gap-2 text-xs font-semibold rounded-sm transition-all",
+              restoringVanilla
+                ? "bg-white/5 text-text-muted cursor-not-allowed border border-border"
+                : "bg-warning/15 text-warning border border-warning/25 hover:bg-warning/25"
+            )}
+            style={{ padding: "6px 0" }}
+          >
+            {restoringVanilla ? "Restoring..." : "Restore Vanilla"}
+          </button>
+        </div>
+      )}
 
       {/* Footer */}
       <div className="px-4 py-4 border-t border-border/30" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>

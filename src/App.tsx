@@ -34,7 +34,7 @@ interface PatchDetail {
 
 let NEXUS_API_KEY = "";
 
-const CURRENT_VERSION = "1.0.4b";
+const CURRENT_VERSION = "1.0.5";
 const GITHUB_RELEASE_URL = "https://api.github.com/repos/exodiaprivate-eng/Definitive-Mod-Manager/releases/latest";
 
 const DEFAULT_CONFIG: AppConfig = {
@@ -91,6 +91,8 @@ export default function App() {
   const [updateDownloadUrl, setUpdateDownloadUrl] = useState<string | null>(null);
   const [showUpdatePrompt, setShowUpdatePrompt] = useState(false);
   const [updating, setUpdating] = useState(false);
+  const [showModdedWarning, setShowModdedWarning] = useState(false);
+  const [restoringVanilla, setRestoringVanilla] = useState(false);
   const [textureMods, setTextureMods] = useState<TextureModEntry[]>([]);
   const activeTextures = config.activeTextures || [];
   const [gameFonts, setGameFonts] = useState<GameFontEntry[]>([]);
@@ -178,7 +180,7 @@ export default function App() {
 
   useEffect(() => {
     async function init() {
-      addLog("Definitive Mod Manager v1.0.4b loaded", "success");
+      addLog("Definitive Mod Manager v1.0.5 loaded", "success");
 
       // Determine app directory dynamically from exe location
       let appDir = "";
@@ -227,7 +229,7 @@ export default function App() {
         }
         if (initResult.papgt_modified) {
           addLog("Warning: PAPGT is not vanilla — another tool or leftover mods may be active", "warning");
-          toast.warning("Game files appear modified. If you have issues, click Unmount or verify game files through Steam.", { duration: 12000 });
+          setShowModdedWarning(true);
         }
       } catch (e) {
         addLog(`Initialization warning: ${e}`, "warning");
@@ -1432,7 +1434,11 @@ export default function App() {
         browserModFolders: activeBrowserMods.length > 0 ? activeBrowserMods : null,
       });
 
-      if (result.success) {
+      // Separate pattern scan info from real errors
+      const patternScans = result.errors.filter((e) => e.includes("pattern scan applied"));
+      const realErrors = result.errors.filter((e) => !e.includes("pattern scan applied"));
+
+      if (result.success || realErrors.length === 0) {
         toast.success(`Mounted ${result.applied.length} mod(s) successfully`);
         addLog(`Mount successful: ${result.applied.length} mod(s) applied`, "success");
         result.applied.forEach((mod) => addLog(`  Mounted: ${mod}`, "success"));
@@ -1441,12 +1447,17 @@ export default function App() {
         if (result.backup_created) {
           addLog("Backup created for original files", "info");
         }
+        if (patternScans.length > 0) {
+          addLog(`Pattern scan matched ${patternScans.length} patch(es) at shifted offsets`, "warning");
+          patternScans.forEach((msg) => addLog(`  ${msg}`, "warning"));
+        }
       } else {
         toast.warning(
-          `Mounted with ${result.errors.length} error(s): ${result.errors[0]}`
+          `Mounted with ${realErrors.length} error(s): ${realErrors[0]}`
         );
-        addLog(`Mount completed with ${result.errors.length} error(s)`, "warning");
-        result.errors.forEach((err) => addLog(`  Error: ${err}`, "error"));
+        addLog(`Mount completed with ${realErrors.length} error(s)`, "warning");
+        realErrors.forEach((err) => addLog(`  Error: ${err}`, "error"));
+        patternScans.forEach((msg) => addLog(`  ${msg}`, "warning"));
       }
 
       // Apply texture mods if any are enabled
@@ -1796,6 +1807,26 @@ export default function App() {
           onOpenGameFolder={() => {
             if (config.gamePath) {
               invoke("open_folder", { folderPath: config.gamePath }).catch(() => {});
+            }
+          }}
+          showModdedWarning={showModdedWarning}
+          restoringVanilla={restoringVanilla}
+          onRestoreVanilla={async () => {
+            setRestoringVanilla(true);
+            try {
+              const backupDir = getAppBaseDir() + "\\backups";
+              const messages = await invoke<string[]>("restore_vanilla", { gamePath: config.gamePath, backupDir });
+              for (const msg of messages) {
+                addLog(msg, "success");
+              }
+              toast.success("Game restored to vanilla");
+              setShowModdedWarning(false);
+              scanPapgt();
+            } catch (e) {
+              addLog(`Restore failed: ${e}`, "error");
+              toast.error(`Restore failed: ${e}`);
+            } finally {
+              setRestoringVanilla(false);
             }
           }}
         />

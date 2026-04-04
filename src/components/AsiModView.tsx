@@ -127,7 +127,7 @@ export function AsiModView({
                 <div className="flex items-center gap-4 pr-5 py-5" style={{ paddingLeft: "20px" }}>
                   {/* Checkbox */}
                   <button
-                    onClick={() => plugin.enabled ? onDisable(plugin.name) : onEnable(plugin.name)}
+                    onClick={(e) => { e.stopPropagation(); plugin.enabled ? onDisable(plugin.name) : onEnable(plugin.name); }}
                     className={cn(
                       "w-5 h-5 rounded-sm border flex items-center justify-center shrink-0 transition-all",
                       plugin.enabled ? "bg-accent border-accent" : "border-border/60 bg-transparent"
@@ -171,7 +171,7 @@ export function AsiModView({
                   {/* Actions */}
                   {plugin.has_ini && (
                     <button
-                      onClick={() => onOpenConfig(plugin.name)}
+                      onClick={(e) => { e.stopPropagation(); onOpenConfig(plugin.name); }}
                       title="Open config"
                       style={{ padding: "8px 14px", fontSize: "12px" }}
                       className="flex items-center gap-2 font-medium text-text-secondary bg-white/[0.03] border border-border/60 rounded-sm hover:bg-white/[0.06] hover:border-border-hover transition-all"
@@ -181,7 +181,7 @@ export function AsiModView({
                     </button>
                   )}
                   <button
-                    onClick={() => onUninstall(plugin.name)}
+                    onClick={(e) => { e.stopPropagation(); onUninstall(plugin.name); }}
                     title="Uninstall"
                     className="p-2.5 rounded-sm text-text-muted/40 hover:text-danger hover:bg-danger/10 transition-all"
                   >

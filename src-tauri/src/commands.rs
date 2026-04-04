@@ -1280,10 +1280,37 @@ pub fn apply_mods(
         recurse(base, base, results);
     }
 
+    // Standalone overlay mods: mods that ship pre-built 0036/ PAZ/PAMT
+    let mut standalone_paz_data: Option<Vec<u8>> = None;
+    let mut standalone_pamt_data: Option<Vec<u8>> = None;
+
     if let Some(ref folders) = browser_mod_folders {
         let mods_dir = Path::new(&mods_path);
         for folder_name in folders {
             let mod_dir = mods_dir.join(folder_name);
+
+            // Check for standalone overlay mod (has 0036/0.paz and 0036/0.pamt)
+            let standalone_paz = mod_dir.join("0036").join("0.paz");
+            let standalone_pamt = mod_dir.join("0036").join("0.pamt");
+            if standalone_paz.exists() && standalone_pamt.exists() {
+                let paz = fs::read(&standalone_paz)
+                    .map_err(|e| format!("Failed to read standalone PAZ from {}: {}", folder_name, e))?;
+                let pamt = fs::read(&standalone_pamt)
+                    .map_err(|e| format!("Failed to read standalone PAMT from {}: {}", folder_name, e))?;
+
+                // If we already have standalone data, append (concatenate PAZ, use latest PAMT)
+                if let Some(ref mut existing_paz) = standalone_paz_data {
+                    existing_paz.extend_from_slice(&paz);
+                    standalone_pamt_data = Some(pamt);
+                } else {
+                    standalone_paz_data = Some(paz);
+                    standalone_pamt_data = Some(pamt);
+                }
+
+                result.applied.push(folder_name.clone());
+                continue; // Don't process as a regular browser mod
+            }
+
             let before = browser_overlay_files.len();
 
             // Check for manifest.json or mod.json → use files/ subdir
@@ -1320,6 +1347,48 @@ pub fn apply_mods(
         }
     }
     let has_browser_mods = !browser_overlay_files.is_empty();
+    let has_standalone = standalone_paz_data.is_some();
+
+    // === STANDALONE OVERLAY MOD PIPELINE ===
+    // If a standalone mod provides pre-built 0036/ files, copy them directly
+    if has_standalone && pabgb_patches.is_empty() && !has_browser_mods {
+        let overlay_dir = Path::new(&game_path).join("0036");
+        let papgt_path = Path::new(&game_path).join("meta").join("0.papgt");
+
+        if !overlay_dir.exists() {
+            fs::create_dir_all(&overlay_dir)
+                .map_err(|e| format!("Failed to create overlay directory 0036: {}", e))?;
+        }
+
+        // Backup PAPGT
+        let papgt_backup = backup_path.join("papgt_clean.bin");
+        if !papgt_backup.exists() && papgt_path.exists() {
+            fs::copy(&papgt_path, &papgt_backup)
+                .map_err(|e| format!("Failed to backup PAPGT: {}", e))?;
+        }
+
+        // Write standalone PAZ and PAMT
+        let paz = standalone_paz_data.as_ref().unwrap();
+        let pamt = standalone_pamt_data.as_ref().unwrap();
+
+        fs::write(overlay_dir.join("0.paz"), paz)
+            .map_err(|e| format!("Failed to write standalone PAZ: {}", e))?;
+        fs::write(overlay_dir.join("0.pamt"), pamt)
+            .map_err(|e| format!("Failed to write standalone PAMT: {}", e))?;
+
+        // Build PAPGT with 0036 entry
+        let clean_papgt = fs::read(&papgt_backup)
+            .map_err(|e| format!("Failed to read clean PAPGT: {}", e))?;
+
+        // Compute PAMT header CRC for the PAPGT entry
+        let pamt_header_crc = hashlittle(&pamt[12..], INTEGRITY_SEED);
+
+        let new_papgt = build_papgt_with_overlay(&clean_papgt, pamt_header_crc)?;
+        fs::write(&papgt_path, &new_papgt)
+            .map_err(|e| format!("Failed to write PAPGT: {}", e))?;
+
+        log::info!("Standalone overlay mod mounted: {} bytes PAZ, {} bytes PAMT", paz.len(), pamt.len());
+    }
 
     // === MULTI-FILE PAZ OVERLAY PIPELINE ===
     if !pabgb_patches.is_empty() || has_browser_mods {
@@ -1445,19 +1514,85 @@ pub fn apply_mods(
                         continue; // Already applied, skip
                     }
 
-                    // Verify original bytes match if provided
+                    // Verify original bytes match if provided — with pattern scan fallback
                     if !change.original.is_empty() {
                         if let Ok(orig_bytes) = hex::decode(&change.original) {
-                            if current != orig_bytes.as_slice() && current != patched_bytes.as_slice() {
-                                result.errors.push(format!(
-                                    "{}: byte mismatch at offset {} in {} — file may be modified by another mod",
-                                    mod_name, change.offset, bare_filename
-                                ));
+                            if current == orig_bytes.as_slice() {
+                                // Original bytes match at expected offset — patch normally
+                                flat_data[offset..offset + patched_bytes.len()].copy_from_slice(&patched_bytes);
                                 continue;
                             }
+
+                            // Offset mismatch — scan for the original bytes in the file
+                            let mut found = false;
+                            let data_len = flat_data.len();
+                            let pattern_len = orig_bytes.len();
+
+                            // For short patterns (<4 bytes), limit search to ±512 bytes
+                            // around the original offset to avoid false matches.
+                            // For longer patterns, scan the entire file.
+                            let (scan_start, scan_end) = if pattern_len < 4 {
+                                let window = 512usize;
+                                (offset.saturating_sub(window), (offset + window).min(data_len))
+                            } else {
+                                (0, data_len)
+                            };
+
+                            // Find the closest match to the original offset
+                            let mut best_match: Option<usize> = None;
+                            let mut best_dist: usize = usize::MAX;
+                            let mut sp = scan_start;
+                            while sp + pattern_len <= scan_end {
+                                if flat_data[sp..sp + pattern_len] == orig_bytes[..] {
+                                    let dist = if sp > offset { sp - offset } else { offset - sp };
+                                    if dist < best_dist {
+                                        best_dist = dist;
+                                        best_match = Some(sp);
+                                    }
+                                }
+                                sp += 1;
+                            }
+
+                            if let Some(match_pos) = best_match {
+                                flat_data[match_pos..match_pos + patched_bytes.len()].copy_from_slice(&patched_bytes);
+                                result.errors.push(format!(
+                                    "{}: pattern scan applied in {} — offset shifted from 0x{:X} to 0x{:X} (delta: {})",
+                                    mod_name, bare_filename, offset, match_pos,
+                                    if match_pos >= offset { format!("+{}", match_pos - offset) }
+                                    else { format!("-{}", offset - match_pos) }
+                                ));
+                                found = true;
+                            }
+
+                            if !found {
+                                // Check if patched bytes already exist nearby (already applied)
+                                let (ps, pe) = if patched_bytes.len() < 4 {
+                                    (offset.saturating_sub(512), (offset + 512).min(data_len))
+                                } else {
+                                    (0, data_len)
+                                };
+                                let mut patched_elsewhere = false;
+                                let mut sp2 = ps;
+                                while sp2 + patched_bytes.len() <= pe {
+                                    if flat_data[sp2..sp2 + patched_bytes.len()] == patched_bytes[..] {
+                                        patched_elsewhere = true;
+                                        break;
+                                    }
+                                    sp2 += 1;
+                                }
+                                if patched_elsewhere {
+                                    continue;
+                                }
+                                result.errors.push(format!(
+                                    "{}: pattern not found in {} — mod may need updating for this game version",
+                                    mod_name, bare_filename
+                                ));
+                            }
+                            continue;
                         }
                     }
 
+                    // No original bytes provided — patch directly at offset
                     flat_data[offset..offset + patched_bytes.len()].copy_from_slice(&patched_bytes);
                 }
                 // Track unique mod names applied
@@ -1615,19 +1750,79 @@ pub fn apply_mods(
                     continue; // Already applied, skip
                 }
 
-                // Verify original bytes match if provided
+                // Verify original bytes match if provided — with pattern scan fallback
                 if !change.original.is_empty() {
                     if let Ok(orig_bytes) = hex::decode(&change.original) {
-                        if current != orig_bytes.as_slice() && current != patched_bytes.as_slice() {
-                            result.errors.push(format!(
-                                "{}: byte mismatch at offset {} in {} — file may be modified by another mod",
-                                mod_name, change.offset, game_file
-                            ));
+                        if current == orig_bytes.as_slice() {
+                            data[offset..offset + patched_bytes.len()].copy_from_slice(&patched_bytes);
                             continue;
                         }
+
+                        // Offset mismatch — scan for the original bytes
+                        let mut found = false;
+                        let data_len = data.len();
+                        let pattern_len = orig_bytes.len();
+
+                        let (scan_start, scan_end) = if pattern_len < 4 {
+                            let window = 512usize;
+                            (offset.saturating_sub(window), (offset + window).min(data_len))
+                        } else {
+                            (0, data_len)
+                        };
+
+                        let mut best_match: Option<usize> = None;
+                        let mut best_dist: usize = usize::MAX;
+                        let mut sp = scan_start;
+                        while sp + pattern_len <= scan_end {
+                            if data[sp..sp + pattern_len] == orig_bytes[..] {
+                                let dist = if sp > offset { sp - offset } else { offset - sp };
+                                if dist < best_dist {
+                                    best_dist = dist;
+                                    best_match = Some(sp);
+                                }
+                            }
+                            sp += 1;
+                        }
+
+                        if let Some(match_pos) = best_match {
+                            data[match_pos..match_pos + patched_bytes.len()].copy_from_slice(&patched_bytes);
+                            result.errors.push(format!(
+                                "{}: pattern scan applied in {} — offset shifted from 0x{:X} to 0x{:X} (delta: {})",
+                                mod_name, game_file, offset, match_pos,
+                                if match_pos >= offset { format!("+{}", match_pos - offset) }
+                                else { format!("-{}", offset - match_pos) }
+                            ));
+                            found = true;
+                        }
+
+                        if !found {
+                            let (ps, pe) = if patched_bytes.len() < 4 {
+                                (offset.saturating_sub(512), (offset + 512).min(data_len))
+                            } else {
+                                (0, data_len)
+                            };
+                            let mut patched_elsewhere = false;
+                            let mut sp2 = ps;
+                            while sp2 + patched_bytes.len() <= pe {
+                                if data[sp2..sp2 + patched_bytes.len()] == patched_bytes[..] {
+                                    patched_elsewhere = true;
+                                    break;
+                                }
+                                sp2 += 1;
+                            }
+                            if patched_elsewhere {
+                                continue;
+                            }
+                            result.errors.push(format!(
+                                "{}: pattern not found in {} — mod may need updating for this game version",
+                                mod_name, game_file
+                            ));
+                        }
+                        continue;
                     }
                 }
 
+                // No original bytes provided — patch directly at offset
                 data[offset..offset + patched_bytes.len()].copy_from_slice(&patched_bytes);
             }
             if !result.applied.contains(mod_name) {
@@ -1650,63 +1845,113 @@ pub fn revert_mods(game_path: String, backup_dir: String) -> Result<Vec<String>,
     }
 
     let game = Path::new(&game_path);
+    let bin64 = game.join("bin64");
     let mut restored = Vec::new();
 
-    // 1. Restore clean PAPGT (without 0036)
+    // 1. Restore clean PAPGT
     let papgt_backup = backup_path.join("papgt_clean.bin");
     let papgt_path = game.join("meta").join("0.papgt");
     if papgt_backup.exists() {
         fs::copy(&papgt_backup, &papgt_path)
             .map_err(|e| format!("Failed to restore PAPGT: {}", e))?;
-        restored.push("Restored: PAPGT restored to clean".to_string());
+        restored.push("Restored: PAPGT".to_string());
     } else {
         return Err("No clean PAPGT backup found. Run 'Initialize' first.".to_string());
     }
 
-    // 2. Delete overlay PAZ/PAMT in 0036/
-    let overlay_dir = game.join("0036");
-    if overlay_dir.exists() {
-        let overlay_paz = overlay_dir.join("0.paz");
-        let overlay_pamt = overlay_dir.join("0.pamt");
-        if overlay_paz.exists() {
-            fs::remove_file(&overlay_paz).ok();
+    // 2. Restore clean PATHC
+    let pathc_path = game.join("meta").join("0.pathc");
+    let pathc_backup = backup_path.join("pathc_clean.bin");
+    if pathc_backup.exists() {
+        if fs::copy(&pathc_backup, &pathc_path).is_ok() {
+            restored.push("Restored: PATHC".to_string());
         }
-        if overlay_pamt.exists() {
-            fs::remove_file(&overlay_pamt).ok();
-        }
-        // Remove the directory if empty
-        fs::remove_dir(&overlay_dir).ok();
-        restored.push("Restored: Overlay files (0036/) removed".to_string());
     }
 
-    // 3. Restore any backed up game files (regular file patches)
-    if let Ok(entries) = fs::read_dir(&backup_path) {
+    // 3. Delete entire 0036/ overlay directory
+    let overlay_dir = game.join("0036");
+    if overlay_dir.exists() {
+        fs::remove_dir_all(&overlay_dir).ok();
+        restored.push("Removed: 0036/ overlay directory".to_string());
+    }
+
+    // 4. Clean meta/ — remove anything that isn't vanilla
+    let vanilla_meta = ["0.papgt", "0.pathc", "0.paver"];
+    if let Ok(entries) = fs::read_dir(game.join("meta")) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            // Skip our special backup files
-            if name == "papgt_clean.bin" || name == "overlay_clean.pamt" || name == "overlay_clean.paz" {
-                continue;
+            if !vanilla_meta.contains(&name.as_str()) {
+                fs::remove_file(entry.path()).ok();
+                restored.push(format!("Removed: meta/{}", name));
             }
-            // Backup files are named after the game file they back up
-            if entry.path().is_file() && !name.starts_with('.') {
-                let game_file = game.join(&name);
-                if game_file.exists() || name.contains('.') {
-                    if fs::copy(entry.path(), &game_file).is_ok() {
-                        fs::remove_file(entry.path()).ok();
-                        restored.push(format!("Restored: {}", name));
+        }
+    }
+
+    // 5. Nuclear bin64 cleanup — remove ALL non-vanilla files
+    // Load vanilla manifest if available, otherwise use known vanilla file list
+    let manifest_path = backup_path.join("vanilla_manifest.json");
+    let vanilla_bin64: std::collections::HashSet<String> = if manifest_path.exists() {
+        if let Ok(data) = fs::read_to_string(&manifest_path) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
+                if let Some(bin64_obj) = v.get("bin64").and_then(|b| b.as_object()) {
+                    bin64_obj.keys().cloned().collect()
+                } else { std::collections::HashSet::new() }
+            } else { std::collections::HashSet::new() }
+        } else { std::collections::HashSet::new() }
+    } else { std::collections::HashSet::new() };
+
+    if !vanilla_bin64.is_empty() && bin64.exists() {
+        if let Ok(entries) = fs::read_dir(&bin64) {
+            // Staging dir for ASI mods we remove
+            let asi_staging = backup_path.join("asi_staging");
+            fs::create_dir_all(&asi_staging).ok();
+
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !vanilla_bin64.contains(&name) {
+                    let path = entry.path();
+                    if path.is_file() {
+                        // Move ASI/DLL/INI to staging instead of deleting
+                        let lower = name.to_lowercase();
+                        if lower.ends_with(".asi") || lower.ends_with(".asi.disabled")
+                            || lower.ends_with(".ini") || lower.ends_with(".log")
+                            || lower == "version.dll" || lower == "winmm.dll"
+                            || lower == "dinput8.dll" || lower == "dsound.dll"
+                        {
+                            let dest = asi_staging.join(&name);
+                            fs::rename(&path, &dest).or_else(|_| fs::copy(&path, &dest).map(|_| ())).ok();
+                            fs::remove_file(&path).ok();
+                            restored.push(format!("Moved to staging: bin64/{}", name));
+                        } else {
+                            fs::remove_file(&path).ok();
+                            restored.push(format!("Removed: bin64/{}", name));
+                        }
+                    } else if path.is_dir() {
+                        fs::remove_dir_all(&path).ok();
+                        restored.push(format!("Removed: bin64/{}/", name));
                     }
                 }
             }
         }
     }
 
-    // 4. Clean up PATHC texture entries if present
-    // (Texture mods register in PATHC — restoring PAPGT doesn't undo those)
-    let pathc_path = game.join("meta").join("0.pathc");
-    let pathc_backup = backup_path.join("pathc_clean.bin");
-    if pathc_backup.exists() {
-        if fs::copy(&pathc_backup, &pathc_path).is_ok() {
-            restored.push("Restored: PATHC restored to clean".to_string());
+    // 6. Remove stray files from game root
+    if let Ok(entries) = fs::read_dir(game) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if path.is_file() {
+                fs::remove_file(&path).ok();
+                restored.push(format!("Removed: {}", name));
+            } else if path.is_dir() {
+                // Remove non-vanilla directories (not numbered groups, meta, bin64)
+                let is_vanilla_dir = name == "bin64" || name == "meta"
+                    || (name.len() == 4 && name.chars().all(|c| c.is_ascii_digit()));
+                if !is_vanilla_dir {
+                    fs::remove_dir_all(&path).ok();
+                    restored.push(format!("Removed: {}/", name));
+                }
+            }
         }
     }
 
@@ -1815,47 +2060,100 @@ pub fn initialize_app(game_path: String, app_dir: String) -> Result<InitResult, 
         names_block.windows(needle.len()).any(|w| w == needle)
     }
 
-    // Backup clean PAPGT (if not already backed up)
-    let papgt_clean = backup_dir.join("papgt_clean.bin");
+    // === Game version detection and cache invalidation ===
+    // The PAPGT contains CRC hashes for every PAZ group's PAMT. When the game
+    // updates, these hashes change. We use the PAPGT content as a version fingerprint.
+    // If it changes, all cached pabgb extracts are stale and must be re-extracted.
     let papgt_path = game.join("meta").join("0.papgt");
+    let papgt_clean = backup_dir.join("papgt_clean.bin");
+    let version_file = backup_dir.join("game_version.bin");
 
-    if !papgt_clean.exists() && papgt_path.exists() {
+    if papgt_path.exists() {
         let papgt_data = fs::read(&papgt_path)
             .map_err(|e| format!("Failed to read PAPGT: {}", e))?;
 
+        // Check for tainted PAPGT (has overlay entry from another tool)
         if papgt_has_overlay(&papgt_data) {
-            // Current PAPGT is NOT vanilla — it has a 0036 overlay entry
-            result.papgt_modified = true;
-            result.messages.push("PAPGT is not vanilla — it contains an overlay entry from another tool or previous mod session. Verify game files through Steam to get a clean state before using DMM.".to_string());
-            // Do NOT back this up as "clean" — it's tainted
-        } else {
-            // Vanilla PAPGT — safe to back up
-            fs::write(&papgt_clean, &papgt_data)
-                .map_err(|e| format!("Failed to backup PAPGT: {}", e))?;
-            result.messages.push("Backed up clean PAPGT".to_string());
-            result.backups_created = true;
-        }
-    } else if papgt_clean.exists() && papgt_path.exists() {
-        // Validate the existing backup is actually vanilla
-        if let Ok(backup_data) = fs::read(&papgt_clean) {
-            if papgt_has_overlay(&backup_data) {
-                // The "clean" backup is tainted — delete it so we can get a real one
-                fs::remove_file(&papgt_clean).ok();
+            if !papgt_clean.exists() {
+                // First run with a modded game
                 result.papgt_modified = true;
-                result.messages.push("Existing PAPGT backup was not vanilla — it has been removed. Verify game files through Steam, then restart DMM to create a proper clean backup.".to_string());
+                result.messages.push("PAPGT is not vanilla — it contains an overlay entry from another tool or previous mod session.".to_string());
             }
-        }
-    }
+        } else {
+            // PAPGT is vanilla — compute version fingerprint
+            let current_hash = {
+                let mut hasher = Sha256::new();
+                hasher.update(&papgt_data);
+                hasher.finalize().to_vec()
+            };
 
-    // Backup clean PATHC (if not already backed up)
-    let pathc_clean = backup_dir.join("pathc_clean.bin");
-    if !pathc_clean.exists() {
-        let pathc_path = game.join("meta").join("0.pathc");
-        if pathc_path.exists() {
-            fs::copy(&pathc_path, &pathc_clean)
-                .map_err(|e| format!("Failed to backup PATHC: {}", e))?;
-            result.messages.push("Backed up clean PATHC".to_string());
-            result.backups_created = true;
+            let version_changed = if version_file.exists() {
+                if let Ok(stored_hash) = fs::read(&version_file) {
+                    stored_hash != current_hash
+                } else { true }
+            } else { false }; // First run — no previous version to compare
+
+            if version_changed {
+                // Game updated! Invalidate all caches
+                result.messages.push("Game update detected — invalidating cached data and updating backups".to_string());
+
+                // Delete stale pabgb extracts
+                if let Ok(entries) = fs::read_dir(&backup_dir) {
+                    for entry in entries.flatten() {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if name.ends_with("_clean.bin") && name != "papgt_clean.bin" && name != "pathc_clean.bin" {
+                            fs::remove_file(entry.path()).ok();
+                        }
+                    }
+                }
+
+                // Delete stale overlay references
+                let overlay_pamt_ref = backup_dir.join("overlay_clean.pamt");
+                let overlay_paz_ref = backup_dir.join("overlay_clean.paz");
+                if overlay_pamt_ref.exists() { fs::remove_file(&overlay_pamt_ref).ok(); }
+                if overlay_paz_ref.exists() { fs::remove_file(&overlay_paz_ref).ok(); }
+
+                // Update PAPGT backup
+                fs::write(&papgt_clean, &papgt_data)
+                    .map_err(|e| format!("Failed to update PAPGT backup: {}", e))?;
+
+                // Update PATHC backup
+                let pathc_path = game.join("meta").join("0.pathc");
+                let pathc_clean = backup_dir.join("pathc_clean.bin");
+                if pathc_path.exists() {
+                    fs::copy(&pathc_path, &pathc_clean)
+                        .map_err(|e| format!("Failed to update PATHC backup: {}", e))?;
+                }
+
+                result.messages.push("Caches cleared, backups refreshed for new game version".to_string());
+            } else if !papgt_clean.exists() {
+                // First run — create initial backups
+                fs::write(&papgt_clean, &papgt_data)
+                    .map_err(|e| format!("Failed to backup PAPGT: {}", e))?;
+                result.messages.push("Backed up clean PAPGT".to_string());
+                result.backups_created = true;
+
+                let pathc_path = game.join("meta").join("0.pathc");
+                let pathc_clean = backup_dir.join("pathc_clean.bin");
+                if !pathc_clean.exists() && pathc_path.exists() {
+                    fs::copy(&pathc_path, &pathc_clean)
+                        .map_err(|e| format!("Failed to backup PATHC: {}", e))?;
+                    result.messages.push("Backed up clean PATHC".to_string());
+                    result.backups_created = true;
+                }
+            } else {
+                // Validate the existing backup is vanilla
+                if let Ok(backup_data) = fs::read(&papgt_clean) {
+                    if papgt_has_overlay(&backup_data) {
+                        fs::remove_file(&papgt_clean).ok();
+                        result.papgt_modified = true;
+                        result.messages.push("Existing PAPGT backup was not vanilla — removed. Verify game files through Steam, then restart DMM.".to_string());
+                    }
+                }
+            }
+
+            // Always store the current version fingerprint
+            fs::write(&version_file, &current_hash).ok();
         }
     }
 
@@ -2137,11 +2435,11 @@ pub fn collect_asi_from_mods(mods_path: String, game_path: String) -> Result<Vec
 
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.is_file() { continue; }
         let name = entry.file_name().to_string_lossy().to_string();
         let lower = name.to_lowercase();
 
-        if lower.ends_with(".asi") || (lower.ends_with(".dll") && !ASI_LOADER_NAMES.contains(&lower.as_str())) {
+        // Loose .asi/.dll files in the mods root
+        if path.is_file() && (lower.ends_with(".asi") || (lower.ends_with(".dll") && !ASI_LOADER_NAMES.contains(&lower.as_str()))) {
             let dest = bin64.join(&name);
             fs::copy(&path, &dest).map_err(|e| format!("Failed to copy {}: {}", name, e))?;
             // Also copy companion .ini if present
@@ -2154,6 +2452,42 @@ pub fn collect_asi_from_mods(mods_path: String, game_path: String) -> Result<Vec
             }
             fs::remove_file(&path).ok();
             installed.push(name);
+            continue;
+        }
+
+        // Folders containing .asi files (e.g. "Storage Anywhere/PrivateStorageAnywhere.asi")
+        if path.is_dir() {
+            let mut has_asi = false;
+            if let Ok(sub_entries) = fs::read_dir(&path) {
+                for sub in sub_entries.flatten() {
+                    let sub_name = sub.file_name().to_string_lossy().to_string();
+                    let sub_lower = sub_name.to_lowercase();
+                    if sub.path().is_file() && sub_lower.ends_with(".asi") {
+                        has_asi = true;
+                        break;
+                    }
+                }
+            }
+            if has_asi {
+                // Install all .asi, .ini, and loader DLLs from this folder
+                if let Ok(sub_entries) = fs::read_dir(&path) {
+                    for sub in sub_entries.flatten() {
+                        let sub_name = sub.file_name().to_string_lossy().to_string();
+                        let sub_lower = sub_name.to_lowercase();
+                        if sub.path().is_file() && (sub_lower.ends_with(".asi") || sub_lower.ends_with(".ini")) {
+                            let dest = bin64.join(&sub_name);
+                            fs::copy(sub.path(), &dest).map_err(|e| format!("Failed to copy {}: {}", sub_name, e))?;
+                            installed.push(sub_name);
+                        } else if sub.path().is_file() && sub_lower.ends_with(".dll") && !ASI_LOADER_NAMES.contains(&sub_lower.as_str()) {
+                            let dest = bin64.join(&sub_name);
+                            fs::copy(sub.path(), &dest).map_err(|e| format!("Failed to copy {}: {}", sub_name, e))?;
+                            installed.push(sub_name);
+                        }
+                    }
+                }
+                // Remove the folder after installing
+                fs::remove_dir_all(&path).ok();
+            }
         }
     }
 
@@ -5527,6 +5861,41 @@ pub fn scan_browser_mods(mods_path: String) -> Result<Vec<BrowserModEntry>, Stri
 
         let folder_name = path.file_name().unwrap().to_string_lossy().to_string();
 
+        // --- Case 0: Standalone overlay mod (ships pre-built 0036/ PAZ/PAMT) ---
+        let standalone_paz = path.join("0036").join("0.paz");
+        let standalone_pamt = path.join("0036").join("0.pamt");
+        if standalone_paz.exists() && standalone_pamt.exists() {
+            // Read modinfo.json if present
+            let modinfo_path = path.join("modinfo.json");
+            let (title, version, author, description) = if modinfo_path.exists() {
+                if let Ok(data) = fs::read_to_string(&modinfo_path) {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
+                        (
+                            v.get("name").and_then(|v| v.as_str()).unwrap_or(&folder_name).to_string(),
+                            v.get("version").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                            v.get("author").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string(),
+                            v.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        )
+                    } else { (folder_name.clone(), String::new(), "Unknown".to_string(), String::new()) }
+                } else { (folder_name.clone(), String::new(), "Unknown".to_string(), String::new()) }
+            } else { (folder_name.clone(), String::new(), "Unknown".to_string(), String::new()) };
+
+            if !seen_folders.contains(&folder_name) {
+                seen_folders.insert(folder_name.clone());
+                entries.push(BrowserModEntry {
+                    folder_name: folder_name.clone(),
+                    title,
+                    author,
+                    version,
+                    description,
+                    file_count: 2,
+                    enabled: false,
+                    mod_type: "standalone overlay".to_string(),
+                });
+            }
+            continue;
+        }
+
         // --- Case 1: Manifest-based mod ---
         // Supports: manifest.json (Crimson Browser) or mod.json (modinfo format)
         let manifest_candidates = [path.join("manifest.json"), path.join("mod.json")];
@@ -5971,6 +6340,159 @@ pub fn import_community_profile(profile_path: String) -> Result<CommunityProfile
     let profile: CommunityProfile = serde_json::from_str(&content)
         .map_err(|e| format!("Failed to parse profile file: {}", e))?;
     Ok(profile)
+}
+
+#[tauri::command]
+pub fn restore_vanilla(game_path: String, backup_dir: String) -> Result<Vec<String>, String> {
+    let game = Path::new(&game_path);
+    let backup_path = Path::new(&backup_dir);
+    let mut messages: Vec<String> = Vec::new();
+
+    // 1. Rebuild PAPGT without 0036 entry
+    let papgt_path = game.join("meta").join("0.papgt");
+    if papgt_path.exists() {
+        let data = fs::read(&papgt_path)
+            .map_err(|e| format!("Failed to read PAPGT: {}", e))?;
+
+        if data.len() >= 12 {
+            let entry_count = data[8] as usize;
+            let entries_start = 12;
+            let entries_end = entries_start + entry_count * 12;
+
+            if data.len() >= entries_end + 4 {
+                let names_len = u32::from_le_bytes(
+                    data[entries_end..entries_end + 4].try_into().unwrap_or([0; 4])
+                ) as usize;
+                let names_start = entries_end + 4;
+
+                if data.len() >= names_start + names_len {
+                    let names_block = &data[names_start..names_start + names_len];
+
+                    // Find all entry name offsets and check which one is "0036"
+                    let mut overlay_entry_idx: Option<usize> = None;
+                    let mut overlay_name_offset: Option<u32> = None;
+
+                    for i in 0..entry_count {
+                        let entry_offset = entries_start + i * 12;
+                        // Entry format: [IsOptional:1][LangType:2][Zero:1][NameOffset:4][PamtCrc:4]
+                        let name_off = u32::from_le_bytes(
+                            data[entry_offset + 4..entry_offset + 8].try_into().unwrap_or([0; 4])
+                        ) as usize;
+
+                        if name_off < names_len {
+                            let end = names_block[name_off..].iter().position(|&b| b == 0).unwrap_or(names_len - name_off);
+                            let name = &names_block[name_off..name_off + end];
+                            if name == b"0036" {
+                                overlay_entry_idx = Some(i);
+                                overlay_name_offset = Some(name_off as u32);
+                            }
+                        }
+                    }
+
+                    if let (Some(entry_idx), Some(overlay_off)) = (overlay_entry_idx, overlay_name_offset) {
+                        // Rebuild PAPGT without the 0036 entry AND its name string
+
+                        // Find the length of "0036\0" in the names block
+                        let overlay_name_len = {
+                            let start = overlay_off as usize;
+                            let end = names_block[start..].iter().position(|&b| b == 0).unwrap_or(names_len - start);
+                            end + 1 // include the null terminator
+                        };
+                        let shift = overlay_name_len as u32;
+
+                        // Build new names block without the overlay name
+                        let mut new_names = Vec::with_capacity(names_len - overlay_name_len);
+                        new_names.extend_from_slice(&names_block[..overlay_off as usize]);
+                        new_names.extend_from_slice(&names_block[(overlay_off as usize + overlay_name_len)..]);
+
+                        // Build new entries, skipping overlay, adjusting name offsets
+                        let new_entry_count = entry_count - 1;
+                        let mut new_data = Vec::new();
+
+                        // Header: copy first 8 bytes, update entry count
+                        new_data.extend_from_slice(&data[0..8]);
+                        new_data.push(new_entry_count as u8);
+                        new_data.extend_from_slice(&data[9..12]);
+
+                        // Copy entries, skipping the overlay one, adjusting name offsets
+                        for i in 0..entry_count {
+                            if i == entry_idx { continue; }
+                            let base = entries_start + i * 12;
+                            let is_optional = data[base];
+                            let lang_type = u16::from_le_bytes(data[base + 1..base + 3].try_into().unwrap());
+                            let zero = data[base + 3];
+                            let mut name_off = u32::from_le_bytes(data[base + 4..base + 8].try_into().unwrap());
+                            let pamt_crc = u32::from_le_bytes(data[base + 8..base + 12].try_into().unwrap());
+
+                            // Shift name offset if it was after the removed name
+                            if name_off > overlay_off {
+                                name_off -= shift;
+                            }
+
+                            new_data.push(is_optional);
+                            new_data.extend_from_slice(&lang_type.to_le_bytes());
+                            new_data.push(zero);
+                            new_data.extend_from_slice(&name_off.to_le_bytes());
+                            new_data.extend_from_slice(&pamt_crc.to_le_bytes());
+                        }
+
+                        // Write new names block length + data
+                        new_data.extend_from_slice(&(new_names.len() as u32).to_le_bytes());
+                        new_data.extend_from_slice(&new_names);
+
+                        // Recompute header CRC
+                        let header_crc = hashlittle(&new_data[12..], INTEGRITY_SEED);
+                        new_data[0..4].copy_from_slice(&header_crc.to_le_bytes());
+
+                        fs::write(&papgt_path, &new_data)
+                            .map_err(|e| format!("Failed to write cleaned PAPGT: {}", e))?;
+
+                        // Save as clean backup
+                        fs::create_dir_all(&backup_path).ok();
+                        let clean_backup = backup_path.join("papgt_clean.bin");
+                        fs::write(&clean_backup, &new_data)
+                            .map_err(|e| format!("Failed to save clean PAPGT backup: {}", e))?;
+
+                        messages.push("PAPGT restored to vanilla (removed 0036 overlay entry)".to_string());
+                    } else {
+                        // No overlay found — already vanilla
+                        let clean_backup = backup_path.join("papgt_clean.bin");
+                        if !clean_backup.exists() {
+                            fs::create_dir_all(&backup_path).ok();
+                            fs::copy(&papgt_path, &clean_backup).ok();
+                        }
+                        messages.push("PAPGT is already vanilla".to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Delete overlay files in 0036/
+    let overlay_dir = game.join("0036");
+    if overlay_dir.exists() {
+        let overlay_paz = overlay_dir.join("0.paz");
+        let overlay_pamt = overlay_dir.join("0.pamt");
+        if overlay_paz.exists() { fs::remove_file(&overlay_paz).ok(); }
+        if overlay_pamt.exists() { fs::remove_file(&overlay_pamt).ok(); }
+        fs::remove_dir(&overlay_dir).ok();
+        messages.push("Removed overlay files (0036/)".to_string());
+    }
+
+    // 3. Backup PATHC if not already backed up, then it's already clean
+    let pathc_path = game.join("meta").join("0.pathc");
+    let pathc_backup = backup_path.join("pathc_clean.bin");
+    if pathc_path.exists() && !pathc_backup.exists() {
+        fs::create_dir_all(&backup_path).ok();
+        fs::copy(&pathc_path, &pathc_backup).ok();
+        messages.push("Backed up clean PATHC".to_string());
+    }
+
+    if messages.is_empty() {
+        messages.push("Game appears to already be vanilla".to_string());
+    }
+
+    Ok(messages)
 }
 
 #[tauri::command]
