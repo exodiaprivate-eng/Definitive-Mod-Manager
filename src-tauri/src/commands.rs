@@ -1042,6 +1042,10 @@ fn build_multi_pamt(files: &[OverlayFileInfo], paz_data_len: u32) -> Vec<u8> {
 /// The Hash at offset 4 = hashlittle(papgt[12..], INTEGRITY_SEED) — everything after the 12-byte header.
 /// The 0036 entry: IsOptional=0, LangType=0x3FFF, Zero=0, NameOffset=<computed>, PamtCrc=<pamt_header_crc>.
 fn build_papgt_with_overlay(clean_papgt: &[u8], pamt_header_crc: u32) -> Result<Vec<u8>, String> {
+    build_papgt_with_overlay_named(clean_papgt, pamt_header_crc, "0036")
+}
+
+fn build_papgt_with_overlay_named(clean_papgt: &[u8], pamt_header_crc: u32, group_name: &str) -> Result<Vec<u8>, String> {
     if clean_papgt.len() < 12 {
         return Err("Clean PAPGT is too small (< 12 bytes)".to_string());
     }
@@ -1094,23 +1098,25 @@ fn build_papgt_with_overlay(clean_papgt: &[u8], pamt_header_crc: u32) -> Result<
 
     let mut names_block = clean_papgt[names_start..names_end].to_vec();
 
-    // Check if 0036 already exists in the names
-    let overlay_name = b"0036\0";
+    // Check if the group already exists in the names
+    let overlay_name_bytes = group_name.as_bytes();
+    let mut overlay_name_with_null = overlay_name_bytes.to_vec();
+    overlay_name_with_null.push(0);
     let mut overlay_name_offset: Option<u32> = None;
 
-    // Scan existing names for "0036"
+    // Scan existing names for the group
     let mut pos = 0;
     while pos < names_block.len() {
         let end = names_block[pos..].iter().position(|&b| b == 0).unwrap_or(names_block.len() - pos);
         let name = &names_block[pos..pos + end];
-        if name == b"0036" {
+        if name == overlay_name_bytes {
             overlay_name_offset = Some(pos as u32);
             break;
         }
-        pos += end + 1; // skip past null terminator
+        pos += end + 1;
     }
 
-    // Check if an entry for 0036 already exists
+    // Check if an entry for this group already exists
     let already_has_overlay = if let Some(offset) = overlay_name_offset {
         entries.iter().any(|(_, _, _, no, _)| *no == offset)
     } else {
@@ -1118,7 +1124,7 @@ fn build_papgt_with_overlay(clean_papgt: &[u8], pamt_header_crc: u32) -> Result<
     };
 
     if already_has_overlay {
-        // 0036 entry already exists — update the PamtCrc and recompute hash
+        // Entry already exists — update the PamtCrc and recompute hash
         let offset_val = overlay_name_offset.unwrap();
         for entry in entries.iter_mut() {
             if entry.3 == offset_val {
@@ -1126,11 +1132,11 @@ fn build_papgt_with_overlay(clean_papgt: &[u8], pamt_header_crc: u32) -> Result<
             }
         }
     } else {
-        // Prepend "0036\0" to the names block and shift all existing name offsets
+        // Prepend group name to the names block and shift all existing name offsets
         let mut new_names_block = Vec::new();
-        new_names_block.extend_from_slice(overlay_name);
+        new_names_block.extend_from_slice(&overlay_name_with_null);
         new_names_block.extend_from_slice(&names_block);
-        let shift = overlay_name.len() as u32; // 5 bytes for "0036\0"
+        let shift = overlay_name_with_null.len() as u32;
 
         // Shift all existing entries' name offsets
         for entry in entries.iter_mut() {
@@ -1281,8 +1287,8 @@ pub fn apply_mods(
     }
 
     // Standalone overlay mods: mods that ship pre-built 0036/ PAZ/PAMT
-    let mut standalone_paz_data: Option<Vec<u8>> = None;
-    let mut standalone_pamt_data: Option<Vec<u8>> = None;
+    // Each entry is (paz_data, pamt_data) — preserved separately for correct offset handling
+    let mut standalone_mods: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
 
     // PAZ group replacement mods: replace existing vanilla groups (e.g. 0020 for language mods)
     // Stored as (group_name, paz_data, pamt_data) for deferred application
@@ -1302,13 +1308,7 @@ pub fn apply_mods(
                 let pamt = fs::read(&standalone_pamt)
                     .map_err(|e| format!("Failed to read standalone PAMT from {}: {}", folder_name, e))?;
 
-                if let Some(ref mut existing_paz) = standalone_paz_data {
-                    existing_paz.extend_from_slice(&paz);
-                    standalone_pamt_data = Some(pamt);
-                } else {
-                    standalone_paz_data = Some(paz);
-                    standalone_pamt_data = Some(pamt);
-                }
+                standalone_mods.push((paz, pamt));
 
                 result.applied.push(folder_name.clone());
                 continue;
@@ -1372,48 +1372,50 @@ pub fn apply_mods(
         }
     }
     let has_browser_mods = !browser_overlay_files.is_empty();
-    let has_standalone = standalone_paz_data.is_some();
+    let has_standalone = !standalone_mods.is_empty();
 
     // === STANDALONE OVERLAY MOD PIPELINE ===
-    // Only runs when no other browser/pabgb mods need the 0036 overlay
-    // When mixed with other mods, standalone data is merged into the multi-file pipeline instead
-    if has_standalone && pabgb_patches.is_empty() && !has_browser_mods {
-        let overlay_dir = Path::new(&game_path).join("0036");
+    // Each standalone mod gets its own group directory (0036, 0037, etc.)
+    // copied directly — preserving the mod author's exact PAZ/PAMT structure.
+    let mut next_overlay_group = 36u32; // start at 0036
+    if has_standalone {
         let papgt_path = Path::new(&game_path).join("meta").join("0.papgt");
-
-        if !overlay_dir.exists() {
-            fs::create_dir_all(&overlay_dir)
-                .map_err(|e| format!("Failed to create overlay directory 0036: {}", e))?;
-        }
-
-        // Backup PAPGT
         let papgt_backup = backup_path.join("papgt_clean.bin");
         if !papgt_backup.exists() && papgt_path.exists() {
             fs::copy(&papgt_path, &papgt_backup)
                 .map_err(|e| format!("Failed to backup PAPGT: {}", e))?;
         }
 
-        // Write standalone PAZ and PAMT
-        let paz = standalone_paz_data.as_ref().unwrap();
-        let pamt = standalone_pamt_data.as_ref().unwrap();
+        // Read clean PAPGT as base for adding entries
+        let mut papgt_data = if papgt_backup.exists() {
+            fs::read(&papgt_backup).map_err(|e| format!("Failed to read PAPGT backup: {}", e))?
+        } else {
+            fs::read(&papgt_path).map_err(|e| format!("Failed to read PAPGT: {}", e))?
+        };
 
-        fs::write(overlay_dir.join("0.paz"), paz)
-            .map_err(|e| format!("Failed to write standalone PAZ: {}", e))?;
-        fs::write(overlay_dir.join("0.pamt"), pamt)
-            .map_err(|e| format!("Failed to write standalone PAMT: {}", e))?;
+        for (s_paz, s_pamt) in &standalone_mods {
+            let group_name = format!("{:04}", next_overlay_group);
+            let group_dir = Path::new(&game_path).join(&group_name);
 
-        // Build PAPGT with 0036 entry
-        let clean_papgt = fs::read(&papgt_backup)
-            .map_err(|e| format!("Failed to read clean PAPGT: {}", e))?;
+            fs::create_dir_all(&group_dir)
+                .map_err(|e| format!("Failed to create overlay directory {}: {}", group_name, e))?;
 
-        // Compute PAMT header CRC for the PAPGT entry
-        let pamt_header_crc = hashlittle(&pamt[12..], INTEGRITY_SEED);
+            fs::write(group_dir.join("0.paz"), s_paz)
+                .map_err(|e| format!("Failed to write PAZ for {}: {}", group_name, e))?;
+            fs::write(group_dir.join("0.pamt"), s_pamt)
+                .map_err(|e| format!("Failed to write PAMT for {}: {}", group_name, e))?;
 
-        let new_papgt = build_papgt_with_overlay(&clean_papgt, pamt_header_crc)?;
-        fs::write(&papgt_path, &new_papgt)
+            // Add this group to PAPGT
+            let pamt_header_crc = hashlittle(&s_pamt[12..], INTEGRITY_SEED);
+            papgt_data = build_papgt_with_overlay_named(&papgt_data, pamt_header_crc, &group_name)?;
+
+            log::info!("Standalone overlay mounted to {}: {} bytes PAZ", group_name, s_paz.len());
+            next_overlay_group += 1;
+        }
+
+        // Write updated PAPGT (with all standalone entries)
+        fs::write(&papgt_path, &papgt_data)
             .map_err(|e| format!("Failed to write PAPGT: {}", e))?;
-
-        log::info!("Standalone overlay mod mounted: {} bytes PAZ, {} bytes PAMT", paz.len(), pamt.len());
     }
 
     // === PAZ GROUP REPLACEMENT PIPELINE ===
@@ -1534,7 +1536,8 @@ pub fn apply_mods(
 
     // === MULTI-FILE PAZ OVERLAY PIPELINE ===
     if !pabgb_patches.is_empty() || has_browser_mods {
-        let overlay_dir = Path::new(&game_path).join("0036");
+        let multi_group = format!("{:04}", next_overlay_group);
+        let overlay_dir = Path::new(&game_path).join(&multi_group);
         let overlay_paz = overlay_dir.join("0.paz");
         let overlay_pamt = overlay_dir.join("0.pamt");
         let papgt_path = Path::new(&game_path).join("meta").join("0.papgt");
@@ -1571,15 +1574,6 @@ pub fn apply_mods(
         let mut paz_data: Vec<u8> = Vec::new();
         let mut had_pabgb_error = false;
 
-        // If standalone overlay data exists, prepend it to the combined PAZ
-        // and mark that we need to use the standalone PAMT as the base
-        let mut use_standalone_pamt = false;
-        if let (Some(ref s_paz), Some(ref _s_pamt)) = (&standalone_paz_data, &standalone_pamt_data) {
-            paz_data.extend_from_slice(s_paz);
-            let padded = (paz_data.len() + 15) & !15;
-            paz_data.resize(padded, 0);
-            use_standalone_pamt = true;
-        }
 
 
         // Sort pabgb_patches for deterministic output
@@ -1827,20 +1821,12 @@ pub fn apply_mods(
             });
         }
 
-        if had_pabgb_error && overlay_files.is_empty() && !use_standalone_pamt {
-            // All files failed and no standalone data, skip overlay writing
-        } else if !overlay_files.is_empty() || use_standalone_pamt {
-            let mut new_pamt;
-
-            if use_standalone_pamt && overlay_files.is_empty() {
-                // Standalone data only, no multi-file entries
-                new_pamt = standalone_pamt_data.clone().unwrap();
-            } else {
-                // Build multi-file PAMT (overlay_files have correct offsets since
-                // paz_data was pre-filled with standalone data before they were appended)
-                let paz_total_len = paz_data.len() as u32;
-                new_pamt = build_multi_pamt(&overlay_files, paz_total_len);
-            }
+        if had_pabgb_error && overlay_files.is_empty() {
+            // All files failed, skip overlay writing
+        } else if !overlay_files.is_empty() {
+            // Build PAMT from all overlay files (standalone + pabgb + browser mods)
+            let paz_total_len = paz_data.len() as u32;
+            let mut new_pamt = build_multi_pamt(&overlay_files, paz_total_len);
 
             // Write PAZ to overlay directory
             fs::write(&overlay_paz, &paz_data)
@@ -1862,13 +1848,13 @@ pub fn apply_mods(
             // The PAMT's HeaderCrc is the first 4 bytes
             let pamt_header_crc = u32::from_le_bytes(new_pamt[0..4].try_into().unwrap());
 
-            // Read the clean PAPGT from backup (without 0036 entry)
-            let clean_papgt_data = if papgt_backup.exists() {
-                fs::read(&papgt_backup)
-                    .map_err(|e| format!("Failed to read clean PAPGT backup: {}", e))?
-            } else if papgt_path.exists() {
+            // Read the CURRENT PAPGT (may already have standalone entries from earlier pipeline)
+            let clean_papgt_data = if papgt_path.exists() {
                 fs::read(&papgt_path)
                     .map_err(|e| format!("Failed to read current PAPGT: {}", e))?
+            } else if papgt_backup.exists() {
+                fs::read(&papgt_backup)
+                    .map_err(|e| format!("Failed to read clean PAPGT backup: {}", e))?
             } else {
                 result.errors.push("No PAPGT found (neither backup nor current)".to_string());
                 result.success = false;
@@ -1876,7 +1862,7 @@ pub fn apply_mods(
             };
 
             if !clean_papgt_data.is_empty() {
-                let new_papgt = build_papgt_with_overlay(&clean_papgt_data, pamt_header_crc)?;
+                let new_papgt = build_papgt_with_overlay_named(&clean_papgt_data, pamt_header_crc, &multi_group)?;
                 fs::write(&papgt_path, &new_papgt)
                     .map_err(|e| format!("Failed to write PAPGT: {}", e))?;
             }
@@ -2037,11 +2023,19 @@ pub fn revert_mods(game_path: String, backup_dir: String) -> Result<Vec<String>,
         }
     }
 
-    // 3. Delete entire 0036/ overlay directory
-    let overlay_dir = game.join("0036");
-    if overlay_dir.exists() {
-        fs::remove_dir_all(&overlay_dir).ok();
-        restored.push("Removed: 0036/ overlay directory".to_string());
+    // 3. Delete all overlay directories (0036, 0037, 0038, etc.)
+    if let Ok(entries) = fs::read_dir(game) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.len() == 4 && name.chars().all(|c| c.is_ascii_digit()) {
+                if let Ok(num) = name.parse::<u32>() {
+                    if num >= 36 && entry.path().is_dir() {
+                        fs::remove_dir_all(entry.path()).ok();
+                        restored.push(format!("Removed: {}/ overlay directory", name));
+                    }
+                }
+            }
+        }
     }
 
     // 3b. Restore any PAZ group replacements (e.g. 0020_0.paz.original)
@@ -2322,6 +2316,75 @@ pub fn initialize_app(game_path: String, app_dir: String) -> Result<InitResult, 
                         .map_err(|e| format!("Failed to update PATHC backup: {}", e))?;
                 }
 
+                // Rebuild vanilla manifest from the freshly-updated game
+                // Only safe if no mods are currently mounted (no 0036/ overlay)
+                let overlay_dir = game.join("0036");
+                if !overlay_dir.exists() || !papgt_has_overlay(&papgt_data) {
+                    let mut manifest = serde_json::Map::new();
+
+                    // Scan bin64/
+                    let bin64 = game.join("bin64");
+                    if bin64.exists() {
+                        let mut bin64_map = serde_json::Map::new();
+                        if let Ok(entries) = fs::read_dir(&bin64) {
+                            for entry in entries.flatten() {
+                                let name = entry.file_name().to_string_lossy().to_string();
+                                let meta = entry.metadata();
+                                if let Ok(m) = meta {
+                                    if m.is_dir() {
+                                        bin64_map.insert(name, serde_json::Value::String("dir".to_string()));
+                                    } else {
+                                        bin64_map.insert(name, serde_json::Value::Number(m.len().into()));
+                                    }
+                                }
+                            }
+                        }
+                        manifest.insert("bin64".to_string(), serde_json::Value::Object(bin64_map));
+                    }
+
+                    // Scan meta/
+                    let meta_dir = game.join("meta");
+                    if meta_dir.exists() {
+                        let mut meta_map = serde_json::Map::new();
+                        if let Ok(entries) = fs::read_dir(&meta_dir) {
+                            for entry in entries.flatten() {
+                                let name = entry.file_name().to_string_lossy().to_string();
+                                if let Ok(m) = entry.metadata() {
+                                    meta_map.insert(name, serde_json::Value::Number(m.len().into()));
+                                }
+                            }
+                        }
+                        manifest.insert("meta".to_string(), serde_json::Value::Object(meta_map));
+                    }
+
+                    // Scan root (game directory files)
+                    let mut root_map = serde_json::Map::new();
+                    if let Ok(entries) = fs::read_dir(game) {
+                        for entry in entries.flatten() {
+                            let name = entry.file_name().to_string_lossy().to_string();
+                            if let Ok(m) = entry.metadata() {
+                                if m.is_dir() {
+                                    // Track numbered group dirs as vanilla
+                                    if name.len() == 4 && name.chars().all(|c| c.is_ascii_digit()) {
+                                        root_map.insert(name, serde_json::Value::String("dir".to_string()));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if !root_map.is_empty() {
+                        manifest.insert("root".to_string(), serde_json::Value::Object(root_map));
+                    }
+
+                    let manifest_path = backup_dir.join("vanilla_manifest.json");
+                    if let Ok(json) = serde_json::to_string_pretty(&serde_json::Value::Object(manifest)) {
+                        fs::write(&manifest_path, json).ok();
+                        result.messages.push("Rebuilt vanilla manifest for new game version".to_string());
+                    }
+                } else {
+                    result.messages.push("Game update detected but mods are mounted — unmount first, then restart DMM to rebuild vanilla manifest".to_string());
+                }
+
                 result.messages.push("Caches cleared, backups refreshed for new game version".to_string());
             } else if !papgt_clean.exists() {
                 // First run — create initial backups
@@ -2337,6 +2400,33 @@ pub fn initialize_app(game_path: String, app_dir: String) -> Result<InitResult, 
                         .map_err(|e| format!("Failed to backup PATHC: {}", e))?;
                     result.messages.push("Backed up clean PATHC".to_string());
                     result.backups_created = true;
+                }
+
+                // Build initial vanilla manifest
+                let manifest_path = backup_dir.join("vanilla_manifest.json");
+                if !manifest_path.exists() {
+                    let mut manifest = serde_json::Map::new();
+                    let bin64 = game.join("bin64");
+                    if bin64.exists() {
+                        let mut bin64_map = serde_json::Map::new();
+                        if let Ok(entries) = fs::read_dir(&bin64) {
+                            for entry in entries.flatten() {
+                                let name = entry.file_name().to_string_lossy().to_string();
+                                if let Ok(m) = entry.metadata() {
+                                    if m.is_dir() {
+                                        bin64_map.insert(name, serde_json::Value::String("dir".to_string()));
+                                    } else {
+                                        bin64_map.insert(name, serde_json::Value::Number(m.len().into()));
+                                    }
+                                }
+                            }
+                        }
+                        manifest.insert("bin64".to_string(), serde_json::Value::Object(bin64_map));
+                    }
+                    if let Ok(json) = serde_json::to_string_pretty(&serde_json::Value::Object(manifest)) {
+                        fs::write(&manifest_path, json).ok();
+                        result.messages.push("Built vanilla manifest for nuclear unmount".to_string());
+                    }
                 }
             } else {
                 // Validate the existing backup is vanilla

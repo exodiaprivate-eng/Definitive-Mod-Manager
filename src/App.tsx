@@ -34,7 +34,7 @@ interface PatchDetail {
 
 let NEXUS_API_KEY = "";
 
-const CURRENT_VERSION = "1.0.5c";
+const CURRENT_VERSION = "1.0.6";
 const GITHUB_RELEASE_URL = "https://api.github.com/repos/exodiaprivate-eng/Definitive-Mod-Manager/releases/latest";
 
 const DEFAULT_CONFIG: AppConfig = {
@@ -183,7 +183,7 @@ export default function App() {
 
   useEffect(() => {
     async function init() {
-      addLog("Definitive Mod Manager v1.0.5c loaded", "success");
+      addLog("Definitive Mod Manager v1.0.6 loaded", "success");
 
       // Determine app directory dynamically from exe location
       let appDir = "";
@@ -606,6 +606,13 @@ export default function App() {
       setBrowserMods(entries);
       if (entries.length > 0) {
         addLog(`Found ${entries.length} file replacement mod(s)`, "info");
+      }
+      // Auto-cleanup: remove deleted mods from active list
+      const existingFolders = new Set(entries.map((e) => e.folder_name));
+      const active = config.activeBrowserMods || [];
+      const cleaned = active.filter((f) => existingFolders.has(f));
+      if (cleaned.length !== active.length) {
+        saveConfig({ ...config, activeBrowserMods: cleaned });
       }
     } catch (e) {
       setBrowserMods([]);

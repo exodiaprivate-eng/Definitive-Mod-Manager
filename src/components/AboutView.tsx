@@ -71,18 +71,27 @@ const features = [
 
 const changelog = [
   {
-    version: "1.0.5c",
+    version: "1.0.6",
     date: "April 2026",
-    title: "File Replacement Hotfix — Encryption Flag Fix",
+    title: "Multi-Overlay Architecture, Standalone Mod Fix & Auto-Cleanup",
     changes: [
-      "Fixed CSS/HTML/XML file replacement mods crashing the game — the 0x0030 flag in the base game means encryption, not file type. Overlay files now correctly use 0x0002 (plain LZ4) which the game loads without decryption",
-      "No Fog of War, Better Trade Menu, Minimap Tweaks, and all other file replacement mods now work correctly through the overlay system",
+      "Multi-overlay architecture — each standalone overlay mod now gets its own group directory (0036, 0037, etc.) instead of being merged into one. Preserves the mod author's exact PAZ/PAMT structure",
+      "Fixed standalone overlay mods (Axiom Bracelet, Axiom of Excellence, etc.) not working when mounted alongside other mods — PAPGT entries were being overwritten by the multi-file pipeline",
+      "Fixed CSS/HTML/XML file replacement mods crashing the game — the 0x0030 flag means encryption, overlay files now use plain LZ4 (0x0002)",
+      "Auto-cleanup — deleted mods are automatically removed from active lists on the next scan. No more ghost entries from deleted folders",
+      "Game update auto-rebuild — vanilla manifest and clean backups are automatically refreshed when a game update is detected",
+      "PAZ group replacement for language mods — dedicated _language/ folder with automatic backup and PAPGT CRC updates",
+      "Custom ASI mod folder — select any folder for ASI mods instead of defaulting to bin64",
+      "Enable All / Disable All buttons now cover all mod types (JSON, texture, archive & file mods)",
+      "Import Language Mod accepts folders and ZIP files",
+      "Auto-refresh detects version changes in mod manifests",
+      "Nuclear unmount now cleans up all overlay directories (0036+), not just 0036",
     ],
   },
   {
-    version: "1.0.5b",
+    version: "1.0.5",
     date: "April 2026",
-    title: "File Replacement Fixes, PAZ Group Replace & ASI Folder Picker",
+    title: "Game Update Resilience, Pattern Scanner & Nuclear Unmount",
     changes: [
       "Fixed file replacement mods (CSS/HTML/XML) — overlay now uses correct game flags (0x0032 for UI files) so the game actually loads them",
       "PAZ group replacement — language and localization mods that replace entire PAZ groups (e.g. 0020/) are now fully supported with automatic backup and PAPGT CRC updates",
