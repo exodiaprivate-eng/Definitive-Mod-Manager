@@ -254,28 +254,34 @@ pub fn check_conflicts(mods_path: String, active_mods: Vec<String>, browser_mod_
             }
         }
 
-        fn get_mod_title(mod_dir: &Path, folder_name: &str) -> String {
-            for name in &["manifest.json", "mod.json"] {
+        fn get_mod_title_and_author(mod_dir: &Path, folder_name: &str) -> (String, String) {
+            for name in &["manifest.json", "mod.json", "modinfo.json"] {
                 let p = mod_dir.join(name);
                 if let Ok(data) = fs::read_to_string(&p) {
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
                         let info = v.get("modinfo").unwrap_or(&v);
-                        if let Some(t) = info.get("title").and_then(|t| t.as_str()) {
-                            return t.to_string();
-                        }
-                        if let Some(t) = v.get("title").and_then(|t| t.as_str()) {
-                            return t.to_string();
-                        }
+                        let title = info.get("title").and_then(|t| t.as_str())
+                            .or_else(|| v.get("title").and_then(|t| t.as_str()))
+                            .or_else(|| v.get("name").and_then(|t| t.as_str()))
+                            .unwrap_or(folder_name).to_string();
+                        let author = info.get("author").and_then(|a| a.as_str())
+                            .or_else(|| v.get("author").and_then(|a| a.as_str()))
+                            .unwrap_or("").to_string().to_lowercase();
+                        return (title, author);
                     }
                 }
             }
-            folder_name.to_string()
+            (folder_name.to_string(), String::new())
         }
+
+        // Track author per mod title for same-author conflict suppression
+        let mut mod_authors: HashMap<String, String> = HashMap::new();
 
         for folder_name in folders {
             let mod_dir = mods_dir.join(folder_name);
             if !mod_dir.exists() { continue; }
-            let title = get_mod_title(&mod_dir, folder_name);
+            let (title, author) = get_mod_title_and_author(&mod_dir, folder_name);
+            mod_authors.insert(title.clone(), author);
 
             // Try manifest/mod.json files/ subdir first
             let mut found_files = false;
@@ -316,8 +322,19 @@ pub fn check_conflicts(mods_path: String, active_mods: Vec<String>, browser_mod_
         }
 
         // Detect file-level conflicts (two mods replacing same file)
+        // Skip conflicts between mods from the same author (they're designed to coexist)
         for (file_path, owners) in &file_owners {
             if owners.len() > 1 {
+                // Check if all owners share the same author
+                let authors: std::collections::HashSet<&str> = owners.iter()
+                    .filter_map(|o| mod_authors.get(o).map(|a| a.as_str()))
+                    .filter(|a| !a.is_empty())
+                    .collect();
+                if authors.len() <= 1 && !authors.is_empty() {
+                    // Same author — skip this conflict
+                    continue;
+                }
+
                 conflicts.push(ConflictInfo {
                     offset: 0,
                     game_file: file_path.clone(),
@@ -1378,50 +1395,6 @@ pub fn apply_mods(
     let has_browser_mods = !browser_overlay_files.is_empty();
     let has_standalone = !standalone_mods.is_empty();
 
-    // === STANDALONE OVERLAY MOD PIPELINE ===
-    // Each standalone mod gets its own group directory (0036, 0037, etc.)
-    // copied directly — preserving the mod author's exact PAZ/PAMT structure.
-    let mut next_overlay_group = 36u32; // start at 0036
-    if has_standalone {
-        let papgt_path = Path::new(&game_path).join("meta").join("0.papgt");
-        let papgt_backup = backup_path.join("papgt_clean.bin");
-        if !papgt_backup.exists() && papgt_path.exists() {
-            fs::copy(&papgt_path, &papgt_backup)
-                .map_err(|e| format!("Failed to backup PAPGT: {}", e))?;
-        }
-
-        // Read clean PAPGT as base for adding entries
-        let mut papgt_data = if papgt_backup.exists() {
-            fs::read(&papgt_backup).map_err(|e| format!("Failed to read PAPGT backup: {}", e))?
-        } else {
-            fs::read(&papgt_path).map_err(|e| format!("Failed to read PAPGT: {}", e))?
-        };
-
-        for (s_paz, s_pamt) in &standalone_mods {
-            let group_name = format!("{:04}", next_overlay_group);
-            let group_dir = Path::new(&game_path).join(&group_name);
-
-            fs::create_dir_all(&group_dir)
-                .map_err(|e| format!("Failed to create overlay directory {}: {}", group_name, e))?;
-
-            fs::write(group_dir.join("0.paz"), s_paz)
-                .map_err(|e| format!("Failed to write PAZ for {}: {}", group_name, e))?;
-            fs::write(group_dir.join("0.pamt"), s_pamt)
-                .map_err(|e| format!("Failed to write PAMT for {}: {}", group_name, e))?;
-
-            // Add this group to PAPGT
-            let pamt_header_crc = hashlittle(&s_pamt[12..], INTEGRITY_SEED);
-            papgt_data = build_papgt_with_overlay_named(&papgt_data, pamt_header_crc, &group_name)?;
-
-            log::info!("Standalone overlay mounted to {}: {} bytes PAZ", group_name, s_paz.len());
-            next_overlay_group += 1;
-        }
-
-        // Write updated PAPGT (with all standalone entries)
-        fs::write(&papgt_path, &papgt_data)
-            .map_err(|e| format!("Failed to write PAPGT: {}", e))?;
-    }
-
     // === PAZ GROUP REPLACEMENT PIPELINE ===
     // Replace existing vanilla PAZ groups (e.g. 0020 for language mods)
     if !group_replacements.is_empty() {
@@ -1539,9 +1512,12 @@ pub fn apply_mods(
     }
 
     // === MULTI-FILE PAZ OVERLAY PIPELINE ===
-    if !pabgb_patches.is_empty() || has_browser_mods {
-        let multi_group = format!("{:04}", next_overlay_group);
-        let overlay_dir = Path::new(&game_path).join(&multi_group);
+    // DDS files collected here for direct PAZ injection after the overlay pipeline
+    let mut dds_injections: Vec<(String, String, Vec<u8>)> = Vec::new();
+
+    // Everything goes into group 0036 — the game only checks this one overlay group
+    if !pabgb_patches.is_empty() || has_browser_mods || has_standalone {
+        let overlay_dir = Path::new(&game_path).join("0036");
         let overlay_paz = overlay_dir.join("0.paz");
         let overlay_pamt = overlay_dir.join("0.pamt");
         let papgt_path = Path::new(&game_path).join("meta").join("0.papgt");
@@ -1578,7 +1554,32 @@ pub fn apply_mods(
         let mut paz_data: Vec<u8> = Vec::new();
         let mut had_pabgb_error = false;
 
-
+        // Merge standalone overlay mods into the combined PAZ
+        // Parse each standalone PAMT and add its entries to overlay_files
+        for (s_paz, s_pamt) in &standalone_mods {
+            let base_offset = paz_data.len() as u32;
+            if let Ok(pamt_info) = read_pamt(s_pamt) {
+                for (_, dir_name_offset, file_start, file_count) in &pamt_info.hash_entries {
+                    let dir_path = resolve_name(&pamt_info.dir_data, *dir_name_offset);
+                    for fi in *file_start..(*file_start + *file_count) {
+                        if let Some(rec) = pamt_info.file_records.get(fi as usize) {
+                            let filename = resolve_name(&pamt_info.fn_data, rec.name_offset);
+                            overlay_files.push(OverlayFileInfo {
+                                dir_path: dir_path.clone(),
+                                filename,
+                                paz_offset: base_offset + rec.paz_offset,
+                                comp_size: rec.comp_size,
+                                decomp_size: rec.decomp_size,
+                                flags: rec.flags,
+                            });
+                        }
+                    }
+                }
+            }
+            paz_data.extend_from_slice(s_paz);
+            let padded = (paz_data.len() + 15) & !15;
+            paz_data.resize(padded, 0);
+        }
 
         // Sort pabgb_patches for deterministic output
         pabgb_patches.sort_by(|a, b| a.0.cmp(&b.0));
@@ -1795,9 +1796,15 @@ pub fn apply_mods(
                 continue;
             }
 
-            // All overlay files use 0x0002 (LZ4 compressed) — the base game's 0x0030/0x0032
-            // flags indicate encryption which we don't apply. The game loads unencrypted
-            // LZ4 data from overlay groups just fine (same as pabgb files).
+            let lower_fn = filename.to_lowercase();
+
+            // DDS textures need direct PAZ injection — the game's texture loader
+            // doesn't find them through overlays
+            if lower_fn.ends_with(".dds") {
+                dds_injections.push((dir_path.clone(), filename.clone(), raw_data.to_vec()));
+                continue;
+            }
+
             let compressed = lz4::block::compress(raw_data, None, false)
                 .unwrap_or_else(|_| raw_data.to_vec());
             let (file_data, flags) = if compressed.len() < raw_data.len() {
@@ -1866,9 +1873,239 @@ pub fn apply_mods(
             };
 
             if !clean_papgt_data.is_empty() {
-                let new_papgt = build_papgt_with_overlay_named(&clean_papgt_data, pamt_header_crc, &multi_group)?;
+                let new_papgt = build_papgt_with_overlay(&clean_papgt_data, pamt_header_crc)?;
                 fs::write(&papgt_path, &new_papgt)
                     .map_err(|e| format!("Failed to write PAPGT: {}", e))?;
+            }
+        }
+    }
+
+    // === DDS TEXTURE INJECTION (direct PAZ replacement) ===
+    // DDS textures don't work through overlays — the game's texture loader
+    // only reads from base PAZ groups. We inject them directly into the base PAZ.
+    if !dds_injections.is_empty() {
+        let game = Path::new(&game_path);
+        let dds_header_size: usize = 128;
+
+        // Group DDS files by their source group (from collect_overlay_files: dir_path starts after group/)
+        // We need to find which base game group contains each DDS file
+        // Search all game groups for each DDS filename
+        let vanilla_groups: Vec<String> = {
+            let mut groups = Vec::new();
+            if let Ok(entries) = fs::read_dir(game) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.len() == 4 && name.chars().all(|c| c.is_ascii_digit()) {
+                        if let Ok(n) = name.parse::<u32>() {
+                            if n < 36 { groups.push(name); }
+                        }
+                    }
+                }
+            }
+            groups.sort();
+            groups
+        };
+
+        for (dir_path, filename, raw_data) in &dds_injections {
+            // Find which group contains this DDS file
+            let mut found = false;
+            for group in &vanilla_groups {
+                let pamt_path = game.join(group).join("0.pamt");
+                if !pamt_path.exists() { continue; }
+
+                let pamt_data = match fs::read(&pamt_path) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+
+                // No quick filename check — PAMT uses parent-chained filenames
+
+                // Parse PAMT to find the exact entry
+                let pamt_info = match read_pamt(&pamt_data) {
+                    Ok(info) => info,
+                    Err(e) => {
+                        continue;
+                    }
+                };
+
+                for (_, dir_name_offset, file_start, file_count) in &pamt_info.hash_entries {
+                    let entry_dir = resolve_name(&pamt_info.dir_data, *dir_name_offset);
+                    if entry_dir != *dir_path { continue; }
+
+                    for fi in *file_start..(*file_start + *file_count) {
+                        if let Some(rec) = pamt_info.file_records.get(fi as usize) {
+                            let entry_fn = resolve_name(&pamt_info.fn_data, rec.name_offset);
+                            if entry_fn != *filename { continue; }
+
+                            // Found the entry! Inject into the base PAZ
+                            let paz_idx = rec.paz_index;
+                            let paz_file = game.join(group).join(format!("{}.paz", paz_idx as u32));
+                            if !paz_file.exists() { continue; }
+
+                            // Backup the PAZ file (first time only)
+                            let bak_name = format!("paz_inject_{}_{}.paz.original", group, paz_idx);
+                            let bak_path = backup_path.join(&bak_name);
+                            if !bak_path.exists() {
+                                fs::copy(&paz_file, &bak_path).ok();
+                            }
+
+                            // Backup the PAMT (first time only)
+                            let pamt_bak_name = format!("paz_inject_{}_0.pamt.original", group);
+                            let pamt_bak = backup_path.join(&pamt_bak_name);
+                            if !pamt_bak.exists() {
+                                fs::copy(&pamt_path, &pamt_bak).ok();
+                            }
+
+                            // Compress based on file type:
+                            // DDS (comp_type 1): 128-byte header raw + LZ4 body
+                            // CSS/HTML/etc (comp_type 2): full LZ4
+                            let is_dds = filename.to_lowercase().ends_with(".dds");
+                            let comp_type = (rec.flags >> 8) & 0xFF; // upper byte of flags u16
+
+                            let payload = if is_dds && raw_data.len() > dds_header_size {
+                                let header = &raw_data[..dds_header_size];
+                                let body = &raw_data[dds_header_size..];
+                                let compressed_body = lz4::block::compress(body, None, false)
+                                    .unwrap_or_else(|_| body.to_vec());
+                                let mut p = Vec::with_capacity(dds_header_size + compressed_body.len());
+                                p.extend_from_slice(header);
+                                p.extend_from_slice(&compressed_body);
+                                p
+                            } else {
+                                // Full LZ4 compression (CSS, HTML, thtml, etc.)
+                                let compressed = lz4::block::compress(raw_data, None, false)
+                                    .unwrap_or_else(|_| raw_data.to_vec());
+                                if compressed.len() < raw_data.len() {
+                                    compressed
+                                } else {
+                                    raw_data.to_vec()
+                                }
+                            };
+
+                            let new_comp_size = payload.len() as u32;
+                            let new_orig_size = raw_data.len() as u32;
+
+                            // Read PAZ, inject payload
+                            let mut paz_buf = fs::read(&paz_file)
+                                .map_err(|e| format!("Failed to read PAZ {}/{}.paz: {}", group, paz_idx, e))?;
+
+                            let new_offset;
+                            if new_comp_size <= rec.comp_size {
+                                // Fits in original slot — overwrite in place, pad with zeros
+                                let start = rec.paz_offset as usize;
+                                let end = start + rec.comp_size as usize;
+                                if end <= paz_buf.len() {
+                                    paz_buf[start..start + payload.len()].copy_from_slice(&payload);
+                                    // Zero-fill remaining
+                                    for b in &mut paz_buf[start + payload.len()..end] { *b = 0; }
+                                }
+                                new_offset = rec.paz_offset;
+                            } else {
+                                // Doesn't fit — append to end
+                                new_offset = paz_buf.len() as u32;
+                                paz_buf.extend_from_slice(&payload);
+                            }
+
+                            fs::write(&paz_file, &paz_buf)
+                                .map_err(|e| format!("Failed to write PAZ {}/{}.paz: {}", group, paz_idx, e))?;
+
+                            // Update PAMT: file record + PAZ CRC + header CRC
+                            let mut new_pamt = pamt_data.clone();
+
+                            // Update PAZ CRC in PazInfo for this paz_index
+                            let new_paz_crc = hashlittle(&paz_buf, INTEGRITY_SEED);
+                            let new_paz_size = paz_buf.len() as u32;
+                            {
+                                let mut pi_off = 12; // after header
+                                let pi_count = u32::from_le_bytes(new_pamt[4..8].try_into().unwrap()) as usize;
+                                // skip magic (4 bytes after paz_count)
+                                pi_off += 8; // paz_count(4) + magic(4) already at 12
+                                // wait - header is [0:4]=HeaderCrc, [4:8]=PazCount, [8:12]=Magic
+                                // PazInfos start at offset 12
+                                let paz_count_val = u32::from_le_bytes(new_pamt[4..8].try_into().unwrap()) as usize;
+                                for pi in 0..paz_count_val {
+                                    let po = 12 + pi * 12;
+                                    let pi_idx = u32::from_le_bytes(new_pamt[po..po+4].try_into().unwrap());
+                                    if pi_idx == paz_idx as u32 {
+                                        new_pamt[po+4..po+8].copy_from_slice(&new_paz_crc.to_le_bytes());
+                                        new_pamt[po+8..po+12].copy_from_slice(&new_paz_size.to_le_bytes());
+                                        break;
+                                    }
+                                }
+                            }
+                            // File record is at a specific position — compute it
+                            // We need the offset of this file record in the PAMT
+                            let rec_index = fi as usize;
+                            // Find file records start in PAMT
+                            let mut pamt_off = 4; // skip header crc
+                            let pc = u32::from_le_bytes(new_pamt[pamt_off..pamt_off+4].try_into().unwrap()) as usize;
+                            pamt_off += 8; // paz_count + magic
+                            pamt_off += pc * 12; // paz infos
+                            let dir_sz = u32::from_le_bytes(new_pamt[pamt_off..pamt_off+4].try_into().unwrap()) as usize;
+                            pamt_off += 4 + dir_sz;
+                            let fn_sz = u32::from_le_bytes(new_pamt[pamt_off..pamt_off+4].try_into().unwrap()) as usize;
+                            pamt_off += 4 + fn_sz;
+                            let he_count = u32::from_le_bytes(new_pamt[pamt_off..pamt_off+4].try_into().unwrap()) as usize;
+                            pamt_off += 4 + he_count * 16;
+                            let _fr_count = u32::from_le_bytes(new_pamt[pamt_off..pamt_off+4].try_into().unwrap()) as usize;
+                            pamt_off += 4;
+                            let rec_off = pamt_off + rec_index * 20;
+
+                            // Update: offset, comp_size, orig_size
+                            new_pamt[rec_off+4..rec_off+8].copy_from_slice(&new_offset.to_le_bytes());
+                            new_pamt[rec_off+8..rec_off+12].copy_from_slice(&new_comp_size.to_le_bytes());
+                            new_pamt[rec_off+12..rec_off+16].copy_from_slice(&new_orig_size.to_le_bytes());
+
+                            // Recompute PAMT header CRC
+                            let pamt_crc = hashlittle(&new_pamt[12..], INTEGRITY_SEED);
+                            new_pamt[0..4].copy_from_slice(&pamt_crc.to_le_bytes());
+
+                            fs::write(&pamt_path, &new_pamt)
+                                .map_err(|e| format!("Failed to write PAMT for {}: {}", group, e))?;
+
+                            // Update PAPGT CRC for this group
+                            let papgt_path = game.join("meta").join("0.papgt");
+                            let mut papgt = fs::read(&papgt_path)
+                                .map_err(|e| format!("Failed to read PAPGT: {}", e))?;
+
+                            let new_pamt_crc = hashlittle(&new_pamt[12..], INTEGRITY_SEED);
+                            // PAPGT format: [Magic:4][Hash:4][Count(byte 8)...]
+                            // Entries at offset 12: [Flags:4][NameOffset:4][PamtCrc:4] x count
+                            // String table at: 12 + count*12 + 4 (after 4-byte length field)
+                            let papgt_count = papgt[8] as usize;
+                            let str_table_start = 12 + papgt_count * 12 + 4;
+
+                            for e in 0..papgt_count {
+                                let eoff = 12 + e * 12;
+                                let noff = u32::from_le_bytes(papgt[eoff+4..eoff+8].try_into().unwrap()) as usize;
+                                let s = str_table_start + noff;
+                                if s < papgt.len() {
+                                    let end = papgt[s..].iter().position(|&b| b == 0).map(|p| p + s).unwrap_or(s);
+                                    let entry_name = std::str::from_utf8(&papgt[s..end]).unwrap_or("");
+                                    if entry_name == group.as_str() {
+                                        papgt[eoff+8..eoff+12].copy_from_slice(&new_pamt_crc.to_le_bytes());
+                                        break;
+                                    }
+                                }
+                            }
+                            // Recompute PAPGT header hash
+                            let papgt_hash = hashlittle(&papgt[12..], INTEGRITY_SEED);
+                            papgt[4..8].copy_from_slice(&papgt_hash.to_le_bytes());
+                            fs::write(&papgt_path, &papgt).ok();
+
+                            log::info!("DDS injected: {}/{} into group {} (offset: {} -> {}, comp: {} -> {})",
+                                dir_path, filename, group, rec.paz_offset, new_offset, rec.comp_size, new_comp_size);
+                            found = true;
+                            break;
+                        }
+                    }
+                    if found { break; }
+                }
+                if found { break; }
+            }
+
+            if !found {
+                result.errors.push(format!("DDS texture not found in game data: {}/{}", dir_path, filename));
             }
         }
     }
@@ -2027,27 +2264,20 @@ pub fn revert_mods(game_path: String, backup_dir: String) -> Result<Vec<String>,
         }
     }
 
-    // 3. Delete all overlay directories (0036, 0037, 0038, etc.)
-    if let Ok(entries) = fs::read_dir(game) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.len() == 4 && name.chars().all(|c| c.is_ascii_digit()) {
-                if let Ok(num) = name.parse::<u32>() {
-                    if num >= 36 && entry.path().is_dir() {
-                        fs::remove_dir_all(entry.path()).ok();
-                        restored.push(format!("Removed: {}/ overlay directory", name));
-                    }
-                }
-            }
-        }
+    // 3. Delete overlay directory (0036)
+    let overlay_dir = game.join("0036");
+    if overlay_dir.exists() {
+        fs::remove_dir_all(&overlay_dir).ok();
+        restored.push("Removed: 0036/ overlay directory".to_string());
     }
 
-    // 3b. Restore any PAZ group replacements (e.g. 0020_0.paz.original)
+    // 3b. Restore any PAZ group replacements and DDS injections
     if let Ok(backup_entries) = fs::read_dir(backup_path) {
         for entry in backup_entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            // Match pattern: XXXX_0.paz.original or XXXX_0.pamt.original
-            if name.ends_with("_0.paz.original") {
+
+            // PAZ group replacements: XXXX_0.paz.original / XXXX_0.pamt.original
+            if name.ends_with("_0.paz.original") && !name.starts_with("paz_inject_") {
                 let group = &name[..4];
                 let target = game.join(group).join("0.paz");
                 if target.parent().map(|p| p.exists()).unwrap_or(false) {
@@ -2055,14 +2285,30 @@ pub fn revert_mods(game_path: String, backup_dir: String) -> Result<Vec<String>,
                         restored.push(format!("Restored: {}/0.paz", group));
                     }
                 }
-                // Clean up the backup
                 fs::remove_file(entry.path()).ok();
-            } else if name.ends_with("_0.pamt.original") {
+            } else if name.ends_with("_0.pamt.original") && !name.starts_with("paz_inject_") {
                 let group = &name[..4];
                 let target = game.join(group).join("0.pamt");
                 if target.parent().map(|p| p.exists()).unwrap_or(false) {
                     if fs::copy(entry.path(), &target).is_ok() {
                         restored.push(format!("Restored: {}/0.pamt", group));
+                    }
+                }
+                fs::remove_file(entry.path()).ok();
+
+            // DDS injection backups: paz_inject_XXXX_N.paz.original / paz_inject_XXXX_0.pamt.original
+            } else if name.starts_with("paz_inject_") && name.ends_with(".original") {
+                // Parse: paz_inject_XXXX_N.paz.original or paz_inject_XXXX_0.pamt.original
+                let rest = &name["paz_inject_".len()..name.len() - ".original".len()];
+                // rest is like "0012_3.paz" or "0012_0.pamt"
+                if let Some(underscore) = rest.find('_') {
+                    let group = &rest[..underscore];
+                    let file_part = &rest[underscore + 1..]; // "3.paz" or "0.pamt"
+                    let target = game.join(group).join(file_part);
+                    if target.parent().map(|p| p.exists()).unwrap_or(false) {
+                        if fs::copy(entry.path(), &target).is_ok() {
+                            restored.push(format!("Restored: {}/{}", group, file_part));
+                        }
                     }
                 }
                 fs::remove_file(entry.path()).ok();

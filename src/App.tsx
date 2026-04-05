@@ -34,7 +34,7 @@ interface PatchDetail {
 
 let NEXUS_API_KEY = "";
 
-const CURRENT_VERSION = "1.0.6b";
+const CURRENT_VERSION = "1.0.7";
 const GITHUB_RELEASE_URL = "https://api.github.com/repos/exodiaprivate-eng/Definitive-Mod-Manager/releases/latest";
 
 const DEFAULT_CONFIG: AppConfig = {

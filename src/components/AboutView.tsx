@@ -39,7 +39,8 @@ const features = [
   { icon: Package, label: "Multi-File Patching", desc: "Supports mods targeting ANY .pabgb game file (storeinfo, inventory, recipes, etc.)" },
   { icon: Layers, label: "PAZ Overlay System", desc: "Reverse-engineered Pearl Abyss archive format — builds game-compatible overlays" },
   { icon: Puzzle, label: "File Replacement Mods", desc: "Auto-detects and mounts manifest.json + files/ mods — full PAZ file replacement alongside JSON patches" },
-  { icon: Image, label: "Texture Mods", desc: "DDS texture replacement support via PATHC index with automatic backup and restore" },
+  { icon: Image, label: "Texture Mods", desc: "DDS texture injection directly into base PAZ archives — split compression matching native game format" },
+  { icon: Search, label: "Pattern Scan Engine", desc: "Survives game updates — scans for original byte patterns and patches at new offsets automatically" },
   { icon: Type, label: "Font Replacement", desc: "Replace per-language game fonts (.ttf) with custom fonts via PAZ overlay" },
   { icon: AlertTriangle, label: "Conflict Detection", desc: "Warns when multiple mods patch the same offset or replace the same file — works across all mod types" },
   { icon: Grid3x3, label: "Compatibility Matrix", desc: "Visual grid showing pairwise compatibility between all installed mods" },
@@ -70,6 +71,21 @@ const features = [
 ];
 
 const changelog = [
+  {
+    version: "1.0.7",
+    date: "April 2026",
+    title: "DDS Texture Injection & Overlay Architecture Overhaul",
+    changes: [
+      "Direct PAZ injection for DDS textures — the game's texture loader ignores overlays, so DDS files are now injected directly into base game PAZ archives with automatic backup and restore",
+      "DDS split compression — textures use the base game's native format: 128-byte raw DDS header + LZ4 compressed body",
+      "Full CRC chain maintenance — PAPGT, PAMT header, PAMT PazInfo, and PAZ data CRCs are all kept in sync after injection",
+      "Single overlay group architecture — reverted from multi-group (0036, 0037, ...) to unified 0036. The game only checks one overlay group for non-texture assets",
+      "Standalone overlay merging — mods shipping pre-built PAZ/PAMT (Axiom Bracelet, etc.) are now merged into the combined 0036 overlay instead of being assigned separate groups",
+      "Same-author conflict suppression — mods from the same author no longer trigger conflict warnings, since they're designed to coexist",
+      "Better mod metadata detection — reads author and title from modinfo.json, manifest.json, and mod.json",
+      "Nuclear unmount now restores base PAZ files modified by DDS texture injection",
+    ],
+  },
   {
     version: "1.0.6b",
     date: "April 2026",
