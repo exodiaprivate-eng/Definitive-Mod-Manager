@@ -1,12 +1,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Minus, Square, X, ArrowUpCircle } from "lucide-react";
+import { Minus, Square, X } from "lucide-react";
 
-interface TitlebarProps {
-  latestVersion?: string | null;
-  onUpdateClick?: () => void;
-}
-
-export function Titlebar({ latestVersion, onUpdateClick }: TitlebarProps) {
+export function Titlebar() {
   const handleMinimize = () => getCurrentWindow().minimize();
   const handleMaximize = () => getCurrentWindow().toggleMaximize();
   const handleClose = () => getCurrentWindow().close();
@@ -25,19 +20,8 @@ export function Titlebar({ latestVersion, onUpdateClick }: TitlebarProps) {
             Definitive Mod Manager
           </span>
           <span className="text-xs text-text-secondary font-mono" data-tauri-drag-region>
-            v1.0.7
+            v1.1.0
           </span>
-          {latestVersion && (
-            <button
-              onClick={onUpdateClick}
-              className="flex items-center gap-1.5 text-xs font-semibold text-accent bg-accent/10 border border-accent/20 rounded-sm hover:bg-accent/20 transition-all"
-              style={{ padding: "2px 8px" }}
-              title={`Update to v${latestVersion}`}
-            >
-              <ArrowUpCircle className="w-3 h-3" />
-              v{latestVersion}
-            </button>
-          )}
         </div>
 
         <div className="flex items-center">

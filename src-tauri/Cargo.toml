@@ -1,6 +1,6 @@
 [package]
 name = "definitive-mod-manager"
-version = "1.0.7"
+version = "1.1.0"
 description = "Definitive Mod Manager for Crimson Desert"
 authors = ["Definitive Mod Manager"]
 license = "MIT"
@@ -30,4 +30,4 @@ lz4_flex = "0.11"
 lz4 = "1.28"
 sha2 = "0.10"
 base64 = "0.22"
-reqwest = { version = "0.12", features = ["blocking"] }
+

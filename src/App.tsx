@@ -25,17 +25,15 @@ import { PreflightDialog } from "@/components/PreflightDialog";
 import { CheckResultDialog } from "@/components/CheckResultDialog";
 import { LogPanel, type LogEntry } from "@/components/LogPanel";
 import { StatusBar } from "@/components/StatusBar";
-import type { AppConfig, ModEntry, ConflictInfo, ActiveMod, ApplyResult, LangModEntry, PapgtStatus, ModProfile, BackupInfo, GameVersion, PreflightResult, RecoverResult, DetailedCheckResult, ModChange, NexusIdMapping, ModUpdateStatus, NexusCacheEntry, AsiStatus, ReshadeStatus, ModPack, Snapshot, NewModData, CommunityProfile, TextureModEntry, TextureApplyResult, GameFontEntry, FontReplaceResult, BrowserModEntry, PazReplaceResult } from "@/types";
+import type { AppConfig, ModEntry, ConflictInfo, ActiveMod, ApplyResult, LangModEntry, PapgtStatus, ModProfile, BackupInfo, GameVersion, PreflightResult, RecoverResult, DetailedCheckResult, ModChange, AsiStatus, ReshadeStatus, ModPack, Snapshot, NewModData, CommunityProfile, TextureModEntry, TextureApplyResult, GameFontEntry, FontReplaceResult, BrowserModEntry, PazReplaceResult } from "@/types";
 
 interface PatchDetail {
   game_file: string;
   changes: ModChange[];
 }
 
-let NEXUS_API_KEY = "";
+const CURRENT_VERSION = "1.1.0";
 
-const CURRENT_VERSION = "1.0.7";
-const GITHUB_RELEASE_URL = "https://api.github.com/repos/exodiaprivate-eng/Definitive-Mod-Manager/releases/latest";
 
 const DEFAULT_CONFIG: AppConfig = {
   gamePath: "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Crimson Desert",
@@ -47,7 +45,6 @@ const DEFAULT_CONFIG: AppConfig = {
   activeBrowserMods: [],
   activeLangMod: null,
   selectedLanguage: "english",
-  nexusApiKey: "",
 };
 
 export default function App() {
@@ -78,20 +75,12 @@ export default function App() {
   const [dragOver, setDragOver] = useState(false);
   const [checkResult, setCheckResult] = useState<DetailedCheckResult | null>(null);
   const [showCheckResult, setShowCheckResult] = useState(false);
-  const [updateStatuses, setUpdateStatuses] = useState<Record<string, ModUpdateStatus>>({});
-  const [, setNexusIdMappings] = useState<NexusIdMapping[]>([]);
-  const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [asiStatus, setAsiStatus] = useState<AsiStatus | null>(null);
   const [installingLoader, setInstallingLoader] = useState(false);
   const [reshadeStatus, setReshadeStatus] = useState<ReshadeStatus | null>(null);
   const [modPacks, setModPacks] = useState<ModPack[]>([]);
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
-  const [thumbnails, setThumbnails] = useState<Record<string, string>>({});
   const [importedProfile, setImportedProfile] = useState<CommunityProfile | null>(null);
-  const [latestVersion, setLatestVersion] = useState<string | null>(null);
-  const [updateDownloadUrl, setUpdateDownloadUrl] = useState<string | null>(null);
-  const [showUpdatePrompt, setShowUpdatePrompt] = useState(false);
-  const [updating, setUpdating] = useState(false);
   const [showModdedWarning, setShowModdedWarning] = useState(false);
   const [restoringVanilla, setRestoringVanilla] = useState(false);
   const [textureMods, setTextureMods] = useState<TextureModEntry[]>([]);
@@ -183,7 +172,7 @@ export default function App() {
 
   useEffect(() => {
     async function init() {
-      addLog("Definitive Mod Manager v1.0.6b loaded", "success");
+      addLog("Definitive Mod Manager v1.1.0 loaded", "success");
 
       // Determine app directory dynamically from exe location
       let appDir = "";
@@ -204,17 +193,6 @@ export default function App() {
         }
       } catch {
         addLog("Game path auto-detection not available", "info");
-      }
-
-      // Load Nexus API key from file
-      try {
-        const loadedKey = await invoke<string>("get_nexus_api_key");
-        if (loadedKey) {
-          NEXUS_API_KEY = loadedKey;
-          addLog("Nexus API key loaded", "info");
-        }
-      } catch {
-        // No key file found — that's fine
       }
 
       // Initialize app directories and backups
@@ -249,9 +227,6 @@ export default function App() {
         if (!cfg.modsPath) {
           cfg.modsPath = myModsPath;
         }
-        if (!cfg.nexusApiKey) {
-          cfg.nexusApiKey = NEXUS_API_KEY;
-        }
         if (cfg.asiModsPath === undefined) {
           cfg.asiModsPath = "";
         }
@@ -269,7 +244,6 @@ export default function App() {
           ...DEFAULT_CONFIG,
           gamePath: detectedPath || DEFAULT_CONFIG.gamePath,
           modsPath: myModsPath,
-          nexusApiKey: NEXUS_API_KEY,
         };
         setConfig(newConfig);
         setConfigPath(myConfigPath);
@@ -281,29 +255,6 @@ export default function App() {
         } catch (e) {
           addLog(`Warning: could not save config: ${e}`, "warning");
         }
-      }
-
-      // Check for DMM updates
-      try {
-        const resp = await fetch(GITHUB_RELEASE_URL);
-        if (resp.ok) {
-          const data = await resp.json();
-          const tag = (data.tag_name || "").replace(/^v/, "");
-          if (tag && tag !== CURRENT_VERSION) {
-            // Find the standalone exe asset
-            const exeAsset = (data.assets || []).find((a: { name: string }) =>
-              a.name.toLowerCase().endsWith(".exe") && !a.name.toLowerCase().includes("setup") && !a.name.toLowerCase().includes("nsis")
-            );
-            setLatestVersion(tag);
-            if (exeAsset) {
-              setUpdateDownloadUrl(exeAsset.browser_download_url);
-            }
-            addLog(`Update available: v${tag} (current: v${CURRENT_VERSION})`, "warning");
-            setShowUpdatePrompt(true);
-          }
-        }
-      } catch {
-        // Silently ignore — no network or API issue
       }
 
       setLoaded(true);
@@ -327,7 +278,6 @@ export default function App() {
     loadBackups();
     loadModPacks();
     loadSnapshots();
-    parseNexusIds();
   }, [config.modsPath]);
 
   useEffect(() => {
@@ -506,43 +456,8 @@ export default function App() {
         activeMods: config.activeMods,
       });
       setMods(entries);
-      loadThumbnails(entries);
     } catch (e) {
       console.error("Failed to scan mods:", e);
-    }
-  }
-
-  async function loadThumbnails(modEntries: ModEntry[]) {
-    const apiKey = config.nexusApiKey || NEXUS_API_KEY;
-    if (!apiKey) return;
-
-    // Load nexus cache to find mod IDs
-    let cache: NexusCacheEntry[] = [];
-    try {
-      cache = await invoke<NexusCacheEntry[]>("load_nexus_cache", { modsPath: config.modsPath });
-    } catch {
-      return;
-    }
-
-    let cacheDir = "";
-    try {
-      cacheDir = await invoke<string>("get_app_dir");
-    } catch {
-      return;
-    }
-
-    for (const entry of cache) {
-      if (thumbnails[entry.file_name]) continue;
-      try {
-        const path = await invoke<string>("fetch_mod_thumbnail", {
-          nexusModId: entry.nexus_mod_id,
-          apiKey,
-          cacheDir,
-        });
-        setThumbnails((prev) => ({ ...prev, [entry.file_name]: path }));
-      } catch {
-        // Thumbnail not available, skip
-      }
     }
   }
 
@@ -686,7 +601,6 @@ export default function App() {
           activeAsiMods: config.activeAsiMods,
           activeLangMod: config.activeLangMod || null,
           selectedLanguage: config.selectedLanguage,
-          nexusApiKey: config.nexusApiKey || "",
         },
         profilesDir,
       });
@@ -934,7 +848,6 @@ export default function App() {
         description,
         modsPath: config.modsPath,
         activeMods: config.activeMods,
-        updateStatuses,
       });
       addLog(`Community profile exported: ${path}`, "success");
       toast.success(`Profile "${name}" exported`);
@@ -1155,158 +1068,6 @@ export default function App() {
     }
   }
 
-  async function parseNexusIds() {
-    if (!config.modsPath) return;
-    try {
-      const mappings = await invoke<NexusIdMapping[]>("parse_nexus_mod_ids", {
-        modsPath: config.modsPath,
-      });
-      setNexusIdMappings(mappings);
-      if (mappings.length > 0) {
-        addLog(`Detected ${mappings.length} Nexus mod ID(s)`, "info");
-      }
-    } catch (e) {
-      console.error("Failed to parse Nexus mod IDs:", e);
-    }
-  }
-
-  async function checkForUpdates() {
-    const apiKey = config.nexusApiKey || NEXUS_API_KEY;
-    if (!apiKey) {
-      toast.error("No Nexus Mods API key available.");
-      return;
-    }
-    setCheckingUpdates(true);
-    addLog("Checking for mod updates via Nexus Mods...", "info");
-
-    try {
-      // 1. Get folder-based IDs
-      let mappings = await invoke<NexusIdMapping[]>("parse_nexus_mod_ids", {
-        modsPath: config.modsPath,
-      });
-      setNexusIdMappings(mappings);
-
-      if (mappings.length > 0) {
-        addLog(`Found ${mappings.length} folder-based Nexus mod mapping(s)`, "info");
-      }
-
-      // 2. Load cached search results
-      try {
-        const cache = await invoke<NexusCacheEntry[]>("load_nexus_cache", {
-          modsPath: config.modsPath,
-        });
-
-        // 3. Add cached entries as mappings (if not already present)
-        for (const entry of cache) {
-          if (!mappings.some((m) => m.file_name === entry.file_name)) {
-            mappings.push({
-              file_name: entry.file_name,
-              nexus_mod_id: entry.nexus_mod_id,
-              folder_name: "",
-            });
-            addLog(`Cache hit: ${entry.file_name} -> Nexus #${entry.nexus_mod_id} (${entry.nexus_name})`, "info");
-          }
-        }
-      } catch (e) {
-        addLog(`Failed to load Nexus cache: ${e}`, "warning");
-      }
-
-      // 4. Find mods still without mappings
-      const unmappedMods = mods.filter(
-        (m) => !mappings.some((map) => map.file_name === m.file_name)
-      );
-
-      // 5. Search Nexus for unmapped mods by name
-      if (unmappedMods.length > 0) {
-        addLog(`Searching Nexus for ${unmappedMods.length} unmatched mod(s)...`, "info");
-        try {
-          const newMappings = await invoke<NexusIdMapping[]>("search_all_unmatched_mods", {
-            apiKey,
-            modsPath: config.modsPath,
-            knownMappings: mappings,
-          });
-          for (const nm of newMappings) {
-            addLog(`Search found: ${nm.file_name} -> Nexus #${nm.nexus_mod_id}`, "success");
-          }
-          if (newMappings.length > 0) {
-            addLog(`Name search found ${newMappings.length} new mapping(s)`, "info");
-          } else if (unmappedMods.length > 0) {
-            addLog(`No Nexus matches found for ${unmappedMods.length} mod(s)`, "info");
-          }
-          mappings = [...mappings, ...newMappings];
-        } catch (e) {
-          addLog(`Nexus name search failed: ${e}`, "warning");
-        }
-      }
-
-      setNexusIdMappings(mappings);
-
-      if (mappings.length === 0) {
-        addLog("No Nexus mod mappings found (folder-based or name search).", "warning");
-        toast.warning("No Nexus mod mappings found");
-        setCheckingUpdates(false);
-        return;
-      }
-
-      addLog(`Checking updates for ${mappings.length} mapped mod(s)...`, "info");
-
-      // 6. Check all mappings for updates
-      const statuses = await invoke<ModUpdateStatus[]>("check_mod_updates", {
-        apiKey,
-        modIds: mappings,
-        modsPath: config.modsPath,
-      });
-
-      const statusMap: Record<string, ModUpdateStatus> = {};
-      let outdatedCount = 0;
-      let errorCount = 0;
-
-      // Add statuses from Nexus-checked mods
-      for (const status of statuses) {
-        statusMap[status.file_name] = status;
-        if (status.is_outdated) {
-          outdatedCount++;
-          addLog(`Update available: ${status.file_name} (local: ${status.local_version} -> nexus: ${status.nexus_version})`, "warning");
-        } else if (status.error) {
-          errorCount++;
-          addLog(`Update check error for ${status.file_name}: ${status.error}`, "error");
-        } else {
-          addLog(`Up to date: ${status.file_name} (v${status.local_version})`, "success");
-        }
-      }
-
-      // Mark all other mods as "up to date" (no Nexus ID to check against)
-      for (const mod of mods) {
-        if (!statusMap[mod.file_name]) {
-          statusMap[mod.file_name] = {
-            file_name: mod.file_name,
-            nexus_mod_id: null,
-            local_version: mod.version,
-            nexus_version: null,
-            is_outdated: false,
-            nexus_url: null,
-            error: null,
-          };
-        }
-      }
-
-      setUpdateStatuses(statusMap);
-
-      if (outdatedCount > 0) {
-        toast.warning(`${outdatedCount} mod(s) have updates available`);
-      } else if (errorCount > 0) {
-        toast.warning(`Update check complete with ${errorCount} error(s)`);
-      } else {
-        toast.success("All mods are up to date");
-      }
-    } catch (e) {
-      addLog(`Update check failed: ${e}`, "error");
-      toast.error(`Update check failed: ${e}`);
-    } finally {
-      setCheckingUpdates(false);
-    }
-  }
-
   async function loadModDetails(fileName: string) {
     if (modDetails[fileName]) return; // Already loaded
     try {
@@ -1466,9 +1227,10 @@ export default function App() {
         browserModFolders: allBrowserMods.length > 0 ? allBrowserMods : null,
       });
 
-      // Separate pattern scan info from real errors
+      // Separate pattern scan info and merge results from real errors
       const patternScans = result.errors.filter((e) => e.includes("pattern scan applied"));
-      const realErrors = result.errors.filter((e) => !e.includes("pattern scan applied"));
+      const mergeResults = result.errors.filter((e) => e.startsWith("three-way merge:"));
+      const realErrors = result.errors.filter((e) => !e.includes("pattern scan applied") && !e.startsWith("three-way merge:"));
 
       if (result.success || realErrors.length === 0) {
         toast.success(`Mounted ${result.applied.length} mod(s) successfully`);
@@ -1483,6 +1245,12 @@ export default function App() {
           addLog(`Pattern scan matched ${patternScans.length} patch(es) at shifted offsets`, "warning");
           patternScans.forEach((msg) => addLog(`  ${msg}`, "warning"));
         }
+        if (mergeResults.length > 0) {
+          mergeResults.forEach((msg) => {
+            const hasConflict = msg.includes("0 bytes conflict");
+            addLog(`  ${msg}`, hasConflict ? "info" : "warning");
+          });
+        }
       } else {
         toast.warning(
           `Mounted with ${realErrors.length} error(s): ${realErrors[0]}`
@@ -1490,6 +1258,7 @@ export default function App() {
         addLog(`Mount completed with ${realErrors.length} error(s)`, "warning");
         realErrors.forEach((err) => addLog(`  Error: ${err}`, "error"));
         patternScans.forEach((msg) => addLog(`  ${msg}`, "warning"));
+        mergeResults.forEach((msg) => addLog(`  ${msg}`, "warning"));
       }
 
       // Apply texture mods if any are enabled
@@ -1846,7 +1615,7 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen bg-background overflow-hidden relative" style={{ padding: 0 }}>
-      <Titlebar latestVersion={latestVersion} onUpdateClick={() => setShowUpdatePrompt(true)} />
+      <Titlebar />
       {/* Drag-and-drop overlay */}
       {dragOver && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm border-2 border-dashed border-accent" style={{ margin: "8px" }}>
@@ -1918,10 +1687,8 @@ export default function App() {
                 modDetails={modDetails}
                 onExpandMod={loadModDetails}
                 versionWarning={versionWarning}
-                updateStatuses={updateStatuses}
                 mountedMods={mountedMods}
                 onDeleteMod={deleteMod}
-                thumbnails={thumbnails}
                 textureMods={textureMods}
                 activeTextures={activeTextures}
                 onToggleTexture={toggleTextureMod}
@@ -2059,64 +1826,6 @@ export default function App() {
           papgtStatus={papgtStatus}
         />
       </div>
-      {showUpdatePrompt && latestVersion && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="bg-surface border border-border/60 rounded-sm shadow-2xl" style={{ padding: "28px 32px", maxWidth: "420px", width: "100%" }}>
-            <h2 className="text-lg font-bold text-text-primary mb-2">Update Available</h2>
-            <p className="text-sm text-text-secondary mb-1">
-              A new version of Definitive Mod Manager is available.
-            </p>
-            <p className="text-sm text-text-muted mb-5">
-              <span className="text-text-secondary">Current:</span> v{CURRENT_VERSION} &rarr; <span className="text-accent font-semibold">v{latestVersion}</span>
-            </p>
-            {updating ? (
-              <div className="flex items-center gap-3 text-sm text-accent">
-                <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-                Downloading update...
-              </div>
-            ) : (
-              <div className="flex items-center justify-end gap-3">
-                <button
-                  onClick={() => setShowUpdatePrompt(false)}
-                  className="px-4 py-2 text-sm font-medium text-text-secondary bg-white/[0.03] border border-border/60 rounded-sm hover:bg-white/[0.06] transition-all"
-                >
-                  Later
-                </button>
-                {updateDownloadUrl ? (
-                  <button
-                    onClick={async () => {
-                      setUpdating(true);
-                      addLog("Downloading update...", "info");
-                      try {
-                        await invoke("download_and_apply_update", { downloadUrl: updateDownloadUrl });
-                        addLog("Update downloaded — restarting...", "success");
-                        await getCurrentWindow().close();
-                      } catch (e) {
-                        addLog(`Update failed: ${e}`, "error");
-                        toast.error(`Update failed: ${e}`);
-                        setUpdating(false);
-                      }
-                    }}
-                    className="px-4 py-2 text-sm font-semibold text-white bg-gradient-to-r from-accent to-indigo-500 rounded-sm hover:brightness-110 transition-all"
-                  >
-                    Update Now
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => {
-                      window.open("https://github.com/exodiaprivate-eng/Definitive-Mod-Manager/releases/latest", "_blank");
-                      setShowUpdatePrompt(false);
-                    }}
-                    className="px-4 py-2 text-sm font-semibold text-white bg-gradient-to-r from-accent to-indigo-500 rounded-sm hover:brightness-110 transition-all"
-                  >
-                    View Release
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
       {showPreflight && (
         <PreflightDialog
           result={preflightResult}

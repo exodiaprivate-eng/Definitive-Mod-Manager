@@ -6,13 +6,11 @@ import {
   ChevronUp,
   AlertTriangle,
   GripVertical,
-  ExternalLink,
   Trash2,
   Check,
 } from "lucide-react";
 import { useState } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
-import type { ModEntry, ModChange, ModUpdateStatus } from "@/types";
+import type { ModEntry, ModChange } from "@/types";
 
 interface PatchDetail {
   game_file: string;
@@ -28,13 +26,11 @@ interface ModCardProps {
   onTogglePatch?: (fileName: string, patchIndex: number) => void;
   details?: PatchDetail[] | null;
   onExpand?: (fileName: string) => void;
-  updateStatus?: ModUpdateStatus;
   isMounted?: boolean;
   onDelete?: (fileName: string) => void;
-  thumbnailPath?: string;
 }
 
-export function ModCard({ mod, index, onToggle, dragHandleProps, disabledIndices = [], onTogglePatch, details, onExpand, updateStatus, isMounted, onDelete, thumbnailPath }: ModCardProps) {
+export function ModCard({ mod, index, onToggle, dragHandleProps, disabledIndices = [], onTogglePatch, details, onExpand, isMounted, onDelete }: ModCardProps) {
   const [expanded, setExpanded] = useState(false);
 
   function handleExpandToggle() {
@@ -141,13 +137,6 @@ export function ModCard({ mod, index, onToggle, dragHandleProps, disabledIndices
         {/* Info */}
         <div className="flex-1 min-w-0" style={{ marginLeft: "4px" }}>
           <div className="flex items-center gap-3">
-            {thumbnailPath && (
-              <img
-                src={convertFileSrc(thumbnailPath)}
-                alt=""
-                className="w-10 h-10 rounded-sm object-cover border border-border/30 shrink-0"
-              />
-            )}
             <h3 className={cn(
               "text-base font-semibold truncate transition-colors",
               mod.enabled ? "text-text-primary" : "text-text-secondary"
@@ -158,34 +147,11 @@ export function ModCard({ mod, index, onToggle, dragHandleProps, disabledIndices
             {mod.version && (
               <span className={cn(
                 "text-xs font-mono shrink-0 border rounded-sm",
-                updateStatus && !updateStatus.error
-                  ? updateStatus.is_outdated
-                    ? "text-danger bg-danger/10 border-danger/25"
-                    : "text-success bg-success/10 border-success/25"
-                  : mod.enabled
-                    ? "text-accent/80 bg-accent/10 border-accent/15"
-                    : "text-text-muted bg-white/[0.02] border-border/40"
+                mod.enabled
+                  ? "text-accent/80 bg-accent/10 border-accent/15"
+                  : "text-text-muted bg-white/[0.02] border-border/40"
               )} style={{ padding: "3px 10px" }}>
                 v{mod.version}
-              </span>
-            )}
-            {updateStatus && !updateStatus.error && updateStatus.is_outdated && (
-              <span className="flex items-center gap-1.5 shrink-0">
-                <span className="text-xs font-medium text-danger">
-                  Outdated — latest: v{updateStatus.nexus_version}
-                </span>
-                {updateStatus.nexus_url && (
-                  <button
-                    className="flex items-center gap-1 text-xs font-medium text-accent hover:text-accent-hover transition-colors"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      window.open(updateStatus.nexus_url!, "_blank");
-                    }}
-                  >
-                    <ExternalLink className="w-3.5 h-3.5" />
-                    Open on Nexus
-                  </button>
-                )}
               </span>
             )}
             {mod.has_conflicts && (

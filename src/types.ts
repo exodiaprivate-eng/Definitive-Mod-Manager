@@ -39,7 +39,6 @@ export interface AppConfig {
   activeBrowserMods: string[];
   activeLangMod: string | null;
   selectedLanguage: string;
-  nexusApiKey: string;
 }
 
 export interface LangModEntry {
@@ -107,13 +106,6 @@ export interface GameVersion {
   exe_modified: string;
 }
 
-export interface NexusFolder {
-  folder_name: string;
-  mod_name: string;
-  has_json: boolean;
-  has_readme: boolean;
-}
-
 export interface BackupInfo {
   file_name: string;
   game_file: string;
@@ -152,39 +144,6 @@ export interface DetailedCheckResult {
   mod_file_issues: string[];
   total_patches: number;
   target_files: string[];
-}
-
-export interface NexusModInfo {
-  mod_id: number;
-  name: string;
-  version: string;
-  summary: string;
-  author: string;
-  updated_timestamp: number;
-  nexus_url: string;
-}
-
-export interface NexusIdMapping {
-  file_name: string;
-  nexus_mod_id: number;
-  folder_name: string;
-}
-
-export interface ModUpdateStatus {
-  file_name: string;
-  nexus_mod_id: number | null;
-  local_version: string;
-  nexus_version: string | null;
-  is_outdated: boolean;
-  nexus_url: string | null;
-  error: string | null;
-}
-
-export interface NexusCacheEntry {
-  file_name: string;
-  nexus_mod_id: number;
-  nexus_name: string;
-  last_checked: string;
 }
 
 export interface ReshadePreset {
@@ -331,7 +290,6 @@ export interface CommunityProfileMod {
   title: string;
   version: string;
   file_name: string;
-  nexus_url: string | null;
 }
 
 export interface CommunityProfile {

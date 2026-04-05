@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Users, Upload, Download, ExternalLink, Check, AlertTriangle, Plus } from "lucide-react";
+import { Users, Upload, Download, Check, AlertTriangle, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { CommunityProfile } from "@/types";
 
@@ -57,7 +57,7 @@ export function CommunityView({ onExport, onImport, importedProfile, installedFi
           <div>
             <h1 className="text-2xl font-bold text-text-primary">Community Profiles</h1>
             <p className="text-sm text-text-muted mt-2">
-              Share your mod list as a lightweight .dmprofile file. Unlike Mod Packs, this is just a checklist of mod names and versions with Nexus links — recipients download the mods themselves.
+              Share your mod list as a lightweight .dmprofile file. Unlike Mod Packs, this is just a checklist of mod names and versions — recipients download the mods themselves.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -212,16 +212,7 @@ export function CommunityView({ onExport, onImport, importedProfile, installedFi
                       </div>
                       <p className="text-xs text-text-muted truncate">{mod.file_name}</p>
                     </div>
-                    {mod.nexus_url && (
-                      <button
-                        onClick={() => window.open(mod.nexus_url!, "_blank")}
-                        className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-accent bg-accent/10 border border-accent/20 rounded-sm hover:bg-accent/20 transition-all"
-                      >
-                        <ExternalLink className="w-3 h-3" />
-                        Nexus
-                      </button>
-                    )}
-                    {!installed && !mod.nexus_url && (
+                    {!installed && (
                       <span className="shrink-0 text-xs text-amber-400">Missing</span>
                     )}
                   </div>

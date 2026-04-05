@@ -44,9 +44,6 @@ pub fn run() {
             commands::check_version_changed,
             // Mod Readme
             commands::read_mod_readme,
-            // Nexus Folder Import
-            commands::scan_nexus_folders,
-            commands::import_nexus_folder,
             // Export/Import Mod List
             commands::export_mod_list,
             commands::import_mod_list,
@@ -59,16 +56,8 @@ pub fn run() {
             // Recovery & Diagnostics
             commands::recover_interrupted,
             commands::detailed_check,
-            // Nexus Mods API
-            commands::parse_nexus_mod_ids,
-            commands::check_mod_updates,
-            // Nexus Name-Based Search
-            commands::search_nexus_by_name,
-            commands::search_all_unmatched_mods,
-            commands::load_nexus_cache,
             // App Initialization
             commands::get_app_dir,
-            commands::get_nexus_api_key,
             commands::initialize_app,
             commands::open_folder,
             // ReShade
@@ -100,9 +89,6 @@ pub fn run() {
             commands::create_mod_json,
             // Compatibility Matrix
             commands::get_compatibility_matrix,
-            // Nexus Thumbnails
-            commands::fetch_mod_thumbnail,
-
             // Texture Mods
             commands::scan_texture_mods,
             commands::apply_texture_mods,
@@ -117,9 +103,8 @@ pub fn run() {
             // Community Profiles
             commands::export_community_profile,
             commands::import_community_profile,
-            // Restore & Self-Update
+            // Restore
             commands::restore_vanilla,
-            commands::download_and_apply_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

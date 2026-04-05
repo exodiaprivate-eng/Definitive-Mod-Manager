@@ -18,14 +18,16 @@ import {
   AlertTriangle,
   ClipboardCheck,
   Wrench,
-  Download,
   Image,
   Check,
   Puzzle,
+  ChevronDown,
+  ChevronUp,
+  FolderOpen,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ModCard } from "./ModCard";
-import type { ModEntry, ModChange, ModUpdateStatus, TextureModEntry, BrowserModEntry } from "@/types";
+import type { ModEntry, ModChange, TextureModEntry, BrowserModEntry } from "@/types";
 
 interface PatchDetail {
   game_file: string;
@@ -52,10 +54,8 @@ interface ModListProps {
   modDetails?: Record<string, PatchDetail[]>;
   onExpandMod?: (fileName: string) => void;
   versionWarning?: string | null;
-  updateStatuses?: Record<string, ModUpdateStatus>;
   mountedMods?: string[];
   onDeleteMod?: (fileName: string) => void;
-  thumbnails?: Record<string, string>;
   textureMods?: TextureModEntry[];
   activeTextures?: string[];
   onToggleTexture?: (folderName: string) => void;
@@ -63,6 +63,179 @@ interface ModListProps {
   activeBrowserMods?: string[];
   onToggleBrowserMod?: (folderName: string) => void;
   activeLangMod?: string | null;
+}
+
+function BundleCard({
+  folder,
+  variants,
+  onToggle,
+  mountedMods = [],
+}: {
+  folder: string;
+  variants: ModEntry[];
+  onToggle: (fileName: string) => void;
+  mountedMods?: string[];
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const activeVariant = variants.find((v) => v.enabled);
+  const anyMounted = variants.some((v) => mountedMods.includes(v.file_name));
+
+  // Display name: replace underscores with spaces, title case
+  const displayName = folder.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+
+  // Get shared info from first variant
+  const first = variants[0];
+  const author = first?.author || "";
+  const description = first?.description || "";
+
+  function handleSelect(fileName: string) {
+    if (activeVariant && activeVariant.file_name !== fileName) {
+      onToggle(activeVariant.file_name);
+    }
+    onToggle(fileName);
+  }
+
+  return (
+    <div
+      className={cn(
+        "card-lift group rounded-sm border relative overflow-hidden mb-3",
+        activeVariant
+          ? "bg-gradient-to-r from-accent/10 via-surface to-surface border-accent/25 shadow-[0_0_25px_rgba(99,102,241,0.08)]"
+          : "bg-surface/80 border-border/60 hover:border-border-hover"
+      )}
+    >
+      {/* Left accent bar */}
+      <div className={cn(
+        "absolute left-0 top-0 bottom-0 w-1 transition-all duration-300",
+        activeVariant
+          ? "bg-gradient-to-b from-accent to-purple-500 shadow-[0_0_8px_rgba(99,102,241,0.5)]"
+          : "bg-border/30 group-hover:bg-text-muted/30"
+      )} />
+
+      <div className="flex items-center gap-4 pr-5 py-5" style={{ paddingLeft: "20px" }}>
+        {/* Checkbox — toggles active variant or expands if none */}
+        <button
+          onClick={() => {
+            if (activeVariant) {
+              onToggle(activeVariant.file_name);
+            } else {
+              setExpanded(true);
+            }
+          }}
+          className={cn(
+            "w-5 h-5 rounded-sm border flex items-center justify-center shrink-0 transition-all",
+            activeVariant ? "bg-accent border-accent" : "border-border/60 bg-transparent"
+          )}
+        >
+          {activeVariant && <Check className="w-3.5 h-3.5 text-white" />}
+        </button>
+
+        {/* Icon */}
+        <div className="w-8 h-8 rounded-sm flex items-center justify-center bg-white/[0.03] border border-border/40 shrink-0">
+          <FolderOpen className={cn("w-4 h-4", activeVariant ? "text-accent" : "text-text-muted")} />
+        </div>
+
+        {/* Info */}
+        <div className="flex-1 min-w-0" style={{ marginLeft: "4px" }}>
+          <div className="flex items-center gap-3">
+            <h3 className={cn(
+              "text-base font-semibold truncate transition-colors",
+              activeVariant ? "text-text-primary" : "text-text-secondary"
+            )}>
+              {displayName}
+            </h3>
+            <span className={cn(
+              "text-xs font-mono shrink-0 border rounded-sm",
+              activeVariant
+                ? "text-accent/80 bg-accent/10 border-accent/15"
+                : "text-text-muted bg-white/[0.02] border-border/40"
+            )} style={{ padding: "3px 10px" }}>
+              {variants.length} variants
+            </span>
+            {activeVariant && (
+              <span className="text-xs text-accent font-medium truncate">
+                {activeVariant.file_name.split("/").pop()?.replace(".json", "").replace(/_/g, " ")}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-5 mt-1.5">
+            {author && (
+              <span className="text-sm text-text-muted">
+                by {author}
+              </span>
+            )}
+            {first?.patch_count && (
+              <span className="text-sm text-text-muted">
+                <span className={cn("font-semibold", activeVariant ? "text-accent" : "text-text-secondary")}>{first.patch_count}</span> patches
+              </span>
+            )}
+            {description && (
+              <span className="text-xs text-text-muted/70 truncate">{description}</span>
+            )}
+          </div>
+        </div>
+
+        {/* Type + mount badges */}
+        <div className="flex items-center gap-2 shrink-0">
+          <span className="text-[11px] font-mono bg-white/[0.03] text-text-muted px-2.5 py-1 rounded-sm border border-border/30">
+            json patch
+          </span>
+          {activeVariant && (
+            anyMounted ? (
+              <span className="text-[11px] font-mono text-success bg-success/10 px-2.5 py-1 rounded-sm border border-success/25">
+                mounted
+              </span>
+            ) : (
+              <span className="text-[11px] font-mono text-warning bg-warning/10 px-2.5 py-1 rounded-sm border border-warning/25">
+                not mounted
+              </span>
+            )
+          )}
+        </div>
+
+        {/* Expand */}
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="p-2.5 rounded-sm text-text-muted/40 hover:text-text-secondary hover:bg-white/[0.04] transition-all"
+        >
+          {expanded ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
+        </button>
+      </div>
+
+      {/* Expanded variant list */}
+      {expanded && (
+        <div className="border-t border-border/40 mx-5 py-3 space-y-2" style={{ marginLeft: "24px" }}>
+          {variants.map((v) => {
+            const variantLabel = v.file_name.split("/").pop()?.replace(".json", "").replace(/_/g, " ") || v.file_name;
+            return (
+              <button
+                key={v.file_name}
+                onClick={() => handleSelect(v.file_name)}
+                className={cn(
+                  "w-full flex items-center gap-5 px-6 py-5 rounded-sm border text-left transition-all",
+                  v.enabled
+                    ? "bg-accent/15 border-accent/30 text-text-primary"
+                    : "bg-white/[0.02] border-border/30 text-text-secondary hover:bg-white/[0.04] hover:border-border/50"
+                )}
+              >
+                <div className={cn(
+                  "w-6 h-6 rounded-sm border-2 flex items-center justify-center shrink-0 transition-all",
+                  v.enabled ? "bg-accent border-accent" : "border-text-muted/40 bg-transparent"
+                )}>
+                  {v.enabled && <Check className="w-4 h-4 text-white" />}
+                </div>
+                <span className="text-base font-medium flex-1">{variantLabel}</span>
+                {v.version && (
+                  <span className="text-sm text-text-muted font-mono">{v.version}</span>
+                )}
+                <span className="text-sm text-text-muted">{v.patch_count} patches</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function ModList({
@@ -83,10 +256,8 @@ export function ModList({
   modDetails = {},
   onExpandMod,
   versionWarning,
-  updateStatuses = {},
   mountedMods = [],
   onDeleteMod,
-  thumbnails = {},
   textureMods = [],
   activeTextures = [],
   onToggleTexture,
@@ -112,16 +283,6 @@ export function ModList({
 
   const activeCount = mods.filter((m) => m.enabled).length;
   const totalActiveCount = activeCount + activeTextures.length + activeBrowserMods.length + (activeLangMod ? 1 : 0);
-  const outdatedMods = Object.values(updateStatuses).filter((s) => s.is_outdated);
-  const outdatedCount = outdatedMods.length;
-
-  function handleUpdateAll() {
-    for (const status of outdatedMods) {
-      if (status.nexus_url) {
-        window.open(status.nexus_url, "_blank");
-      }
-    }
-  }
 
   function handleDragEnd(result: DropResult) {
     if (!result.destination) return;
@@ -148,19 +309,6 @@ export function ModList({
               <FolderPlus className="w-5 h-5" />
               Import
             </button>
-            {outdatedCount > 0 && (
-              <button
-                onClick={handleUpdateAll}
-                style={{ padding: "8px 16px", fontSize: "13px" }}
-                className="flex items-center gap-3 font-medium text-accent bg-accent/10 border border-accent/20 rounded-sm hover:bg-accent/20 transition-all relative"
-              >
-                <Download className="w-5 h-5" />
-                Update All
-                <span className="text-xs font-bold bg-danger text-white rounded-sm" style={{ padding: "1px 7px", minWidth: "20px", textAlign: "center" }}>
-                  {outdatedCount}
-                </span>
-              </button>
-            )}
             <button
               onClick={onCheck}
               style={{ padding: "8px 16px", fontSize: "13px" }}
@@ -275,50 +423,74 @@ export function ModList({
             </p>
           </div>
         ) : (
-          <DragDropContext onDragEnd={handleDragEnd}>
-            <Droppable droppableId="mod-list">
-              {(provided) => (
-                <div
-                  ref={provided.innerRef}
-                  {...provided.droppableProps}
-                  className="space-y-3"
-                >
-                  <AnimatePresence>
-                    {filtered.map((mod, index) => (
-                      <Draggable
-                        key={mod.file_name}
-                        draggableId={mod.file_name}
-                        index={index}
-                      >
-                        {(provided) => (
-                          <div
-                            ref={provided.innerRef}
-                            {...provided.draggableProps}
-                          >
-                            <ModCard
-                              mod={mod}
-                              index={index}
-                              onToggle={onToggle}
-                              dragHandleProps={(provided.dragHandleProps ?? undefined) as Record<string, unknown> | undefined}
-                              disabledIndices={disabledIndicesMap[mod.file_name] || []}
-                              onTogglePatch={onTogglePatch}
-                              details={modDetails[mod.file_name] || null}
-                              onExpand={onExpandMod}
-                              updateStatus={updateStatuses[mod.file_name]}
-                              isMounted={mountedMods.includes(mod.file_name)}
-                              onDelete={onDeleteMod}
-                              thumbnailPath={thumbnails[mod.file_name]}
-                            />
-                          </div>
-                        )}
-                      </Draggable>
-                    ))}
-                  </AnimatePresence>
-                  {provided.placeholder}
-                </div>
-              )}
-            </Droppable>
-          </DragDropContext>
+          <>
+            {/* Bundled mod folders (folder/variant.json) — radio-select cards */}
+            {(() => {
+              const bundled: Record<string, ModEntry[]> = {};
+              const standalone: ModEntry[] = [];
+              for (const mod of filtered) {
+                if (mod.file_name.includes("/")) {
+                  const folder = mod.file_name.split("/")[0];
+                  if (!bundled[folder]) bundled[folder] = [];
+                  bundled[folder].push(mod);
+                } else {
+                  standalone.push(mod);
+                }
+              }
+              return Object.entries(bundled).map(([folder, variants]) => (
+                <BundleCard
+                  key={folder}
+                  folder={folder}
+                  variants={variants}
+                  onToggle={onToggle}
+                  mountedMods={mountedMods}
+                />
+              ));
+            })()}
+
+            <DragDropContext onDragEnd={handleDragEnd}>
+              <Droppable droppableId="mod-list">
+                {(provided) => (
+                  <div
+                    ref={provided.innerRef}
+                    {...provided.droppableProps}
+                    className="space-y-3"
+                  >
+                    <AnimatePresence>
+                      {filtered.filter((m) => !m.file_name.includes("/")).map((mod, index) => (
+                        <Draggable
+                          key={mod.file_name}
+                          draggableId={mod.file_name}
+                          index={index}
+                        >
+                          {(provided) => (
+                            <div
+                              ref={provided.innerRef}
+                              {...provided.draggableProps}
+                            >
+                              <ModCard
+                                mod={mod}
+                                index={index}
+                                onToggle={onToggle}
+                                dragHandleProps={(provided.dragHandleProps ?? undefined) as Record<string, unknown> | undefined}
+                                disabledIndices={disabledIndicesMap[mod.file_name] || []}
+                                onTogglePatch={onTogglePatch}
+                                details={modDetails[mod.file_name] || null}
+                                onExpand={onExpandMod}
+                                isMounted={mountedMods.includes(mod.file_name)}
+                                onDelete={onDeleteMod}
+                              />
+                            </div>
+                          )}
+                        </Draggable>
+                      ))}
+                    </AnimatePresence>
+                    {provided.placeholder}
+                  </div>
+                )}
+              </Droppable>
+            </DragDropContext>
+          </>
         )}
 
         {/* Non-JSON Mods: merge texture + browser mods that share the same folder */}

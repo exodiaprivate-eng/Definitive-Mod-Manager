@@ -64,8 +64,6 @@ pub struct AppConfig {
     pub active_lang_mod: Option<String>,
     #[serde(rename = "selectedLanguage", default = "default_language")]
     pub selected_language: String,
-    #[serde(rename = "nexusApiKey", default)]
-    pub nexus_api_key: String,
 }
 
 fn default_language() -> String {
@@ -152,20 +150,47 @@ pub fn scan_mods(mods_path: String, active_mods: Vec<ActiveMod>) -> Result<Vec<M
     let active_names: Vec<&str> = active_mods.iter().map(|m| m.file_name.as_str()).collect();
     let mut entries = Vec::new();
 
+    // Collect JSON mod files from root AND one level deep in subfolders
+    // (e.g. mods/mymod.json and mods/bundle_folder/variant.json)
+    let mut json_files: Vec<(std::path::PathBuf, String)> = Vec::new();
+
     let read_dir = fs::read_dir(mods_dir)
         .map_err(|e| format!("Failed to read mods directory: {}", e))?;
+
+    // Reserved filenames used by browser/standalone mods — skip these
+    let reserved_names: std::collections::HashSet<&str> =
+        ["manifest.json", "mod.json", "modinfo.json"].iter().copied().collect();
 
     for entry in read_dir {
         let entry = entry.map_err(|e| format!("Dir entry error: {}", e))?;
         let path = entry.path();
 
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
+        if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("json") {
+            let file_name = path.file_name().unwrap().to_string_lossy().to_string();
+            json_files.push((path, file_name));
+        } else if path.is_dir() {
+            // Scan one level deep for JSON mod bundles (folder with variant .json files)
+            let folder_name = entry.file_name().to_string_lossy().to_string();
+            // Skip special folders
+            if folder_name.starts_with('_') { continue; }
+            if let Ok(sub_entries) = fs::read_dir(&path) {
+                for sub in sub_entries.flatten() {
+                    let sub_path = sub.path();
+                    if sub_path.is_file() && sub_path.extension().and_then(|e| e.to_str()) == Some("json") {
+                        let sub_name = sub_path.file_name().unwrap().to_string_lossy().to_string();
+                        if reserved_names.contains(sub_name.as_str()) { continue; }
+                        // Only include if it parses as a valid mod file (has patches)
+                        // Use folder/filename as the identifier
+                        let display_name = format!("{}/{}", folder_name, sub_name);
+                        json_files.push((sub_path, display_name));
+                    }
+                }
+            }
         }
+    }
 
-        let file_name = path.file_name().unwrap().to_string_lossy().to_string();
-
-        match parse_mod_file(&path) {
+    for (path, file_name) in &json_files {
+        match parse_mod_file(path) {
             Ok(mod_file) => {
                 let (title, version, author, description) = get_mod_display_info(&mod_file);
                 let patch_count: usize = mod_file.patches.iter()
@@ -177,7 +202,7 @@ pub fn scan_mods(mods_path: String, active_mods: Vec<ActiveMod>) -> Result<Vec<M
                 let enabled = active_names.contains(&file_name.as_str());
 
                 entries.push(ModEntry {
-                    file_name,
+                    file_name: file_name.clone(),
                     title,
                     version,
                     author,
@@ -314,6 +339,25 @@ pub fn check_conflicts(mods_path: String, active_mods: Vec<String>, browser_mod_
                             collect_all_paths(&sub.path(), &mod_dir, &mut paths);
                             for p in paths {
                                 file_owners.entry(p.to_lowercase()).or_default().push(title.clone());
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Standalone overlay detection: parse PAMT to discover game files
+            let standalone_pamt = mod_dir.join("0036").join("0.pamt");
+            if standalone_pamt.exists() {
+                if let Ok(pamt_bytes) = fs::read(&standalone_pamt) {
+                    if let Ok(pamt_info) = read_pamt(&pamt_bytes) {
+                        for (_, dir_name_offset, file_start, file_count) in &pamt_info.hash_entries {
+                            let dir_p = resolve_name(&pamt_info.dir_data, *dir_name_offset);
+                            for fi in *file_start..(*file_start + *file_count) {
+                                if let Some(rec) = pamt_info.file_records.get(fi as usize) {
+                                    let fname = resolve_name(&pamt_info.fn_data, rec.name_offset);
+                                    let full = format!("{}/{}", dir_p, fname).to_lowercase();
+                                    file_owners.entry(full).or_default().push(title.clone());
+                                }
                             }
                         }
                     }
@@ -897,6 +941,98 @@ fn extract_from_paz(game_path: &str, group_id: &str, rec: &PamtFileRecord, filen
         Ok(decompressed)
     } else {
         Ok(raw)
+    }
+}
+
+// =============================================================================
+// three_way_merge — merge two mod versions of the same file using vanilla as base
+// =============================================================================
+
+/// Result of a three-way merge between two mod versions of the same file.
+struct MergeResult {
+    data: Vec<u8>,              // The merged file data
+    primary_name: String,       // Name of the primary mod (structural changes / load order)
+    secondary_name: String,     // Name of the secondary mod
+    bytes_from_primary: usize,  // Bytes where primary changed from vanilla (kept)
+    bytes_from_secondary: usize,// Bytes where only secondary changed (applied)
+    bytes_agreed: usize,        // Bytes where both made the same change
+    bytes_conflict: usize,      // Bytes where both changed differently (primary wins)
+}
+
+/// Three-way merge: applies non-overlapping changes from secondary onto primary,
+/// using vanilla as the common ancestor.
+///
+/// - Where only primary changed → keep primary's value
+/// - Where only secondary changed → apply secondary's value
+/// - Where both changed to the same value → keep it (agreement)
+/// - Where both changed differently → primary wins (load order priority)
+///
+/// When primary is a different size than vanilla (structural mod), secondary changes
+/// are applied at their vanilla offsets only if that offset exists in primary AND
+/// primary's byte at that offset still matches vanilla (i.e., primary didn't touch it).
+fn three_way_merge(
+    vanilla: &[u8],
+    primary: &[u8],
+    primary_name: &str,
+    secondary: &[u8],
+    secondary_name: &str,
+) -> MergeResult {
+    let mut merged = primary.to_vec();
+    let mut bytes_from_primary = 0usize;
+    let mut bytes_from_secondary = 0usize;
+    let mut bytes_agreed = 0usize;
+    let mut bytes_conflict = 0usize;
+
+    // Three-way merge only works when BOTH mods are the same size as vanilla.
+    // If either mod changed the file size (inserted/removed data), byte offsets
+    // no longer align and merging at position i would corrupt data.
+    let can_merge = primary.len() == vanilla.len() && secondary.len() == vanilla.len();
+
+    if can_merge {
+        for i in 0..vanilla.len() {
+            let v = vanilla[i];
+            let s = secondary[i];
+
+            if s == v {
+                // Secondary didn't change this byte — nothing to do
+                continue;
+            }
+
+            // Secondary changed this byte from vanilla
+            let p = merged[i]; // primary's value at this offset
+
+            if p == v {
+                // Primary didn't change this byte — apply secondary's change
+                merged[i] = s;
+                bytes_from_secondary += 1;
+            } else if p == s {
+                // Both made the same change — agreement
+                bytes_agreed += 1;
+            } else {
+                // Both changed, different values — primary wins
+                bytes_conflict += 1;
+            }
+        }
+    }
+
+    // Count primary-only changes
+    let check_len = vanilla.len().min(primary.len());
+    for i in 0..check_len {
+        if primary[i] != vanilla[i] {
+            bytes_from_primary += 1;
+        }
+    }
+    // Subtract agreed and conflict (they're also counted in primary changes)
+    bytes_from_primary = bytes_from_primary.saturating_sub(bytes_agreed + bytes_conflict);
+
+    MergeResult {
+        data: merged,
+        primary_name: primary_name.to_string(),
+        secondary_name: secondary_name.to_string(),
+        bytes_from_primary,
+        bytes_from_secondary,
+        bytes_agreed,
+        bytes_conflict,
     }
 }
 
@@ -1554,6 +1690,11 @@ pub fn apply_mods(
         let mut paz_data: Vec<u8> = Vec::new();
         let mut had_pabgb_error = false;
 
+        // Track files provided by standalone overlays so JSON patches can merge on top
+        // Key: lowercase filename (e.g. "iteminfo.pabgb")
+        // Value: (paz_offset, comp_size, decomp_size, flags, overlay_files_index)
+        let mut standalone_file_map: HashMap<String, (u32, u32, u32, u16, usize)> = HashMap::new();
+
         // Merge standalone overlay mods into the combined PAZ
         // Parse each standalone PAMT and add its entries to overlay_files
         for (s_paz, s_pamt) in &standalone_mods {
@@ -1564,14 +1705,20 @@ pub fn apply_mods(
                     for fi in *file_start..(*file_start + *file_count) {
                         if let Some(rec) = pamt_info.file_records.get(fi as usize) {
                             let filename = resolve_name(&pamt_info.fn_data, rec.name_offset);
+                            let idx = overlay_files.len();
                             overlay_files.push(OverlayFileInfo {
                                 dir_path: dir_path.clone(),
-                                filename,
+                                filename: filename.clone(),
                                 paz_offset: base_offset + rec.paz_offset,
                                 comp_size: rec.comp_size,
                                 decomp_size: rec.decomp_size,
                                 flags: rec.flags,
                             });
+                            // Track for cross-format merging
+                            standalone_file_map.insert(
+                                filename.to_lowercase(),
+                                (base_offset + rec.paz_offset, rec.comp_size, rec.decomp_size, rec.flags, idx),
+                            );
                         }
                     }
                 }
@@ -1579,6 +1726,192 @@ pub fn apply_mods(
             paz_data.extend_from_slice(s_paz);
             let padded = (paz_data.len() + 15) & !15;
             paz_data.resize(padded, 0);
+        }
+
+        // === THREE-WAY MERGE: Standalone overlays + File replacement mods ===
+        // When a standalone overlay and a file replacement mod both provide the
+        // same game file, merge their changes using vanilla as the base.
+        let mut merged_browser_files: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for (br_dir, br_fname, br_data) in &browser_overlay_files {
+            let key = br_fname.to_lowercase();
+            if let Some(&(sa_paz_off, sa_comp, sa_decomp, sa_flags, sa_idx)) = standalone_file_map.get(&key) {
+                // Both a standalone overlay and a file replacement mod provide this file
+                // Decompress the standalone version from paz_data
+                let standalone_decompressed = {
+                    let start = sa_paz_off as usize;
+                    let end = start + sa_comp as usize;
+                    if end > paz_data.len() { continue; }
+                    let raw = &paz_data[start..end];
+                    if sa_comp != sa_decomp {
+                        match lz4::block::decompress(raw, Some(sa_decomp as i32)) {
+                            Ok(d) => d,
+                            Err(_) => continue,
+                        }
+                    } else {
+                        raw.to_vec()
+                    }
+                };
+
+                // Get the standalone mod name from overlay_files
+                let standalone_mod_name = overlay_files.get(sa_idx)
+                    .map(|f| format!("{}", f.dir_path))
+                    .unwrap_or_else(|| "standalone overlay".to_string());
+
+                // Find browser mod name
+                let browser_mod_name = br_dir.clone();
+
+                // Extract vanilla for three-way merge base
+                let game_file_path = format!("{}/{}", br_dir, br_fname);
+                let vanilla_data = match find_file_in_game(&game_path, &game_file_path) {
+                    Ok((group_id, _, rec)) => {
+                        match extract_from_paz(&game_path, &group_id, &rec, br_fname) {
+                            Ok(d) => d,
+                            Err(_) => continue,
+                        }
+                    }
+                    Err(_) => continue,
+                };
+
+                // Determine primary: the mod with structural changes (different size) is primary.
+                // If both are same size as vanilla, first standalone then browser by load order.
+                let (primary, primary_name, secondary, secondary_name) = if standalone_decompressed.len() != vanilla_data.len() {
+                    // Standalone has structural changes — it's primary
+                    (standalone_decompressed.as_slice(), standalone_mod_name.as_str(),
+                     br_data.as_slice(), browser_mod_name.as_str())
+                } else if br_data.len() != vanilla_data.len() {
+                    // Browser mod has structural changes — it's primary
+                    (br_data.as_slice(), browser_mod_name.as_str(),
+                     standalone_decompressed.as_slice(), standalone_mod_name.as_str())
+                } else {
+                    // Both same size — standalone is primary (it was loaded first)
+                    (standalone_decompressed.as_slice(), standalone_mod_name.as_str(),
+                     br_data.as_slice(), browser_mod_name.as_str())
+                };
+
+                let merge = three_way_merge(&vanilla_data, primary, primary_name, secondary, secondary_name);
+
+                log::info!(
+                    "Three-way merge on {}: primary={} ({}B changed), secondary={} ({}B applied), {}B agreed, {}B conflict (primary wins)",
+                    br_fname, merge.primary_name, merge.bytes_from_primary,
+                    merge.secondary_name, merge.bytes_from_secondary,
+                    merge.bytes_agreed, merge.bytes_conflict
+                );
+
+                // Always surface merge results to the frontend
+                result.errors.push(format!(
+                    "three-way merge: {} — merged {} + {} → {} bytes applied from {}, {} bytes agreed, {} bytes conflict ({} wins)",
+                    br_fname, merge.primary_name, merge.secondary_name,
+                    merge.bytes_from_secondary, merge.secondary_name,
+                    merge.bytes_agreed, merge.bytes_conflict, merge.primary_name
+                ));
+
+                // Compress the merged data and replace the standalone entry in paz_data
+                let compressed = lz4::block::compress(&merge.data, None, false)
+                    .unwrap_or_else(|_| merge.data.clone());
+                let new_offset = paz_data.len() as u32;
+                let comp_size = compressed.len() as u32;
+                let decomp_size = merge.data.len() as u32;
+                paz_data.extend_from_slice(&compressed);
+                let padded = (paz_data.len() + 15) & !15;
+                paz_data.resize(padded, 0);
+
+                // Update the standalone overlay_files entry to point to the merged data
+                if let Some(entry) = overlay_files.get_mut(sa_idx) {
+                    entry.paz_offset = new_offset;
+                    entry.comp_size = comp_size;
+                    entry.decomp_size = decomp_size;
+                    entry.flags = 0x0002; // LZ4
+                }
+
+                // Also update standalone_file_map so pabgb patches use the merged version
+                standalone_file_map.insert(key.clone(), (new_offset, comp_size, decomp_size, 0x0002, sa_idx));
+
+                // Mark this browser file as merged so we skip it in the browser overlay loop
+                merged_browser_files.insert(key);
+            }
+        }
+
+        // Also handle multiple file replacement mods providing the same file (no standalone involved)
+        {
+            let mut browser_by_file: HashMap<String, Vec<(String, String, &Vec<u8>)>> = HashMap::new();
+            for (dir_path, filename, raw_data) in &browser_overlay_files {
+                let key = filename.to_lowercase();
+                if merged_browser_files.contains(&key) { continue; } // already handled above
+                browser_by_file.entry(key).or_default().push((dir_path.clone(), filename.clone(), raw_data));
+            }
+
+            for (key, versions) in &browser_by_file {
+                if versions.len() < 2 { continue; }
+
+                // Multiple file replacement mods provide the same file — three-way merge
+                let (first_dir, first_fname, first_data) = &versions[0];
+                let game_file_path = format!("{}/{}", first_dir, first_fname);
+                let vanilla_data = match find_file_in_game(&game_path, &game_file_path) {
+                    Ok((group_id, _, rec)) => {
+                        match extract_from_paz(&game_path, &group_id, &rec, first_fname) {
+                            Ok(d) => d,
+                            Err(_) => continue,
+                        }
+                    }
+                    Err(_) => continue,
+                };
+
+                // Start with first version as primary, merge each subsequent version
+                let mut current = first_data.to_vec();
+                let mut current_name = first_dir.clone();
+
+                for (dir_path, filename, raw_data) in &versions[1..] {
+                    let merge = three_way_merge(&vanilla_data, &current, &current_name, raw_data, dir_path);
+
+                    log::info!(
+                        "Three-way merge on {}: {} + {} → {}B applied, {}B agreed, {}B conflict",
+                        filename, merge.primary_name, merge.secondary_name,
+                        merge.bytes_from_secondary, merge.bytes_agreed, merge.bytes_conflict
+                    );
+
+                    result.errors.push(format!(
+                        "three-way merge: {} — merged {} + {} → {} bytes applied from {}, {} bytes agreed, {} bytes conflict ({} wins)",
+                        filename, merge.primary_name, merge.secondary_name,
+                        merge.bytes_from_secondary, merge.secondary_name,
+                        merge.bytes_agreed, merge.bytes_conflict, merge.primary_name
+                    ));
+
+                    current = merge.data;
+                    current_name = format!("{}+{}", merge.primary_name, merge.secondary_name);
+                }
+
+                // Store the merged version — it will be picked up by the browser overlay loop
+                // Mark all but one as merged so they don't get added twice
+                for (dir_path, filename, _) in &versions[1..] {
+                    merged_browser_files.insert(filename.to_lowercase());
+                }
+
+                // Replace the first version's data in browser_overlay_files isn't possible
+                // since we're iterating immutably. Instead, we'll add the merged data to paz_data
+                // and overlay_files directly, then mark ALL versions as merged.
+                let compressed = lz4::block::compress(&current, None, false)
+                    .unwrap_or_else(|_| current.clone());
+                let new_offset = paz_data.len() as u32;
+                paz_data.extend_from_slice(&compressed);
+                let padded = (paz_data.len() + 15) & !15;
+                paz_data.resize(padded, 0);
+
+                let (first_dir, first_fname, _) = &versions[0];
+                overlay_files.push(OverlayFileInfo {
+                    dir_path: first_dir.clone(),
+                    filename: first_fname.clone(),
+                    paz_offset: new_offset,
+                    comp_size: compressed.len() as u32,
+                    decomp_size: current.len() as u32,
+                    flags: 0x0002,
+                });
+
+                // Mark ALL versions as merged
+                for (_, filename, _) in versions {
+                    merged_browser_files.insert(filename.to_lowercase());
+                }
+            }
         }
 
         // Sort pabgb_patches for deterministic output
@@ -1597,14 +1930,66 @@ pub fn apply_mods(
             let clean_name = bare_filename.replace(".pabgb", "_clean.bin");
             let clean_backup = backup_path.join(&clean_name);
 
+            // Check if a standalone overlay mod provides this pabgb file.
+            // If the standalone is the same size as vanilla, use it as the base directly.
+            // If the standalone is a DIFFERENT size (structural mod), still use it as the base
+            // but apply JSON patches with uniqueness-checked pattern scan only — a patch is
+            // only applied if its original byte pattern matches at exactly ONE location in the
+            // file, preventing false-positive corruption from ambiguous short patterns.
+            let standalone_base: Option<(Vec<u8>, bool)> = standalone_file_map.get(&bare_filename.to_lowercase())
+                .and_then(|&(paz_off, comp_sz, decomp_sz, flags, _idx)| {
+                    let start = paz_off as usize;
+                    let end = start + comp_sz as usize;
+                    if end > paz_data.len() { return None; }
+                    let raw = &paz_data[start..end];
+                    let data = if comp_sz != decomp_sz {
+                        lz4::block::decompress(raw, Some(decomp_sz as i32)).ok()?
+                    } else {
+                        raw.to_vec()
+                    };
+                    Some(data)
+                })
+                .map(|data| {
+                    // Get vanilla size to check if structural
+                    let vanilla_size = if clean_backup.exists() {
+                        fs::metadata(&clean_backup).map(|m| m.len() as usize).unwrap_or(0)
+                    } else {
+                        0 // Will be determined later
+                    };
+                    let is_structural = data.len() != vanilla_size && vanilla_size > 0;
+                    (data, is_structural)
+                });
+
             // Check if a file replacement mod provides this pabgb file
-            // If so, use that as base instead of vanilla (cross-format merge)
             let browser_base: Option<Vec<u8>> = browser_overlay_files.iter()
                 .find(|(_, fname, _)| fname.eq_ignore_ascii_case(bare_filename))
                 .map(|(_, _, data)| data.clone());
 
-            // Get decompressed data — prefer file replacement base, then clean backup, then extract from PAZ
-            let flat_data_result: Result<Vec<u8>, String> = if let Some(base_data) = browser_base {
+            // Determine if we need contextual pattern scan (structural standalone mod)
+            let require_unique_patterns = standalone_base.as_ref().map(|(_, is_structural)| *is_structural).unwrap_or(false);
+
+            // Load vanilla data for contextual scan — needed to grab surrounding bytes as fingerprint
+            let vanilla_ref: Option<Vec<u8>> = if require_unique_patterns {
+                if clean_backup.exists() {
+                    fs::read(&clean_backup).ok()
+                } else {
+                    match find_file_in_game(&game_path, game_file) {
+                        Ok((gid, _, rec)) => extract_from_paz(&game_path, &gid, &rec, bare_filename).ok(),
+                        Err(_) => None,
+                    }
+                }
+            } else {
+                None
+            };
+
+            // Get decompressed data — prefer standalone overlay, then file replacement, then vanilla
+            let flat_data_result: Result<Vec<u8>, String> = if let Some((base_data, _)) = standalone_base {
+                log::info!("Using standalone overlay base for {} ({} bytes){}",
+                    bare_filename, base_data.len(),
+                    if require_unique_patterns { " — uniqueness-checked pattern scan only" } else { "" }
+                );
+                Ok(base_data)
+            } else if let Some(base_data) = browser_base {
                 log::info!("Using file replacement base for {} ({} bytes), will apply JSON patches on top", bare_filename, base_data.len());
                 Ok(base_data)
             } else if clean_backup.exists() {
@@ -1669,6 +2054,92 @@ pub fn apply_mods(
                     // Verify original bytes match if provided — with pattern scan fallback
                     if !change.original.is_empty() {
                         if let Ok(orig_bytes) = hex::decode(&change.original) {
+                            // === CONTEXTUAL PATTERN SCAN (structural standalone mods) ===
+                            // When the base file has a different size than vanilla, byte offsets
+                            // don't correspond. Instead of searching for the tiny 1-2 byte pattern,
+                            // grab a context window from vanilla around the patch offset and search
+                            // for THAT in the modified file. The context (item name, neighboring
+                            // fields) acts as a unique fingerprint for the record.
+                            if require_unique_patterns {
+                                if let Some(ref vanilla_data) = vanilla_ref {
+                                    let ctx_size = 24usize; // bytes of context before the patch
+                                    let ctx_start = offset.saturating_sub(ctx_size);
+                                    let ctx_end = (offset + orig_bytes.len() + ctx_size).min(vanilla_data.len());
+
+                                    if ctx_start < vanilla_data.len() && ctx_end <= vanilla_data.len() && ctx_end - ctx_start >= ctx_size {
+                                        let context = &vanilla_data[ctx_start..ctx_end];
+                                        let patch_rel = offset - ctx_start; // relative position of patch within context
+
+                                        // Search for this context in the modified file
+                                        let mut ctx_matches: Vec<usize> = Vec::new();
+                                        let mut sp = 0usize;
+                                        while sp + context.len() <= flat_data.len() {
+                                            if flat_data[sp..sp + context.len()] == *context {
+                                                ctx_matches.push(sp);
+                                            }
+                                            sp += 1;
+                                        }
+
+                                        if ctx_matches.len() == 1 {
+                                            // Unique context match — apply patch at the right relative position
+                                            let patch_pos = ctx_matches[0] + patch_rel;
+                                            if patch_pos + patched_bytes.len() <= flat_data.len() {
+                                                flat_data[patch_pos..patch_pos + patched_bytes.len()].copy_from_slice(&patched_bytes);
+                                                log::info!("{}: contextual scan applied in {} — 0x{:X} to 0x{:X}", mod_name, bare_filename, offset, patch_pos);
+                                                result.errors.push(format!(
+                                                    "{}: contextual scan applied in {} — offset 0x{:X} to 0x{:X} (delta: {}, context match)",
+                                                    mod_name, bare_filename, offset, patch_pos,
+                                                    if patch_pos >= offset { format!("+{}", patch_pos - offset) }
+                                                    else { format!("-{}", offset - patch_pos) }
+                                                ));
+                                            }
+                                        } else if ctx_matches.len() > 1 {
+                                            log::info!("{}: contextual scan skipped in {} — {} context matches (ambiguous)", mod_name, bare_filename, ctx_matches.len());
+                                        } else if ctx_matches.is_empty() {
+                                            // Context not found — the surrounding bytes were also modified
+                                            // Try progressively smaller context windows
+                                            let mut applied = false;
+                                            for smaller_ctx in [16usize, 12, 8] {
+                                                let sc_start = offset.saturating_sub(smaller_ctx);
+                                                let sc_end = (offset + orig_bytes.len() + smaller_ctx).min(vanilla_data.len());
+                                                if sc_start >= vanilla_data.len() || sc_end > vanilla_data.len() { continue; }
+                                                let small_context = &vanilla_data[sc_start..sc_end];
+                                                let small_rel = offset - sc_start;
+
+                                                let mut sm: Vec<usize> = Vec::new();
+                                                let mut sp2 = 0usize;
+                                                while sp2 + small_context.len() <= flat_data.len() {
+                                                    if flat_data[sp2..sp2 + small_context.len()] == *small_context {
+                                                        sm.push(sp2);
+                                                    }
+                                                    sp2 += 1;
+                                                }
+
+                                                if sm.len() == 1 {
+                                                    let pp = sm[0] + small_rel;
+                                                    if pp + patched_bytes.len() <= flat_data.len() {
+                                                        flat_data[pp..pp + patched_bytes.len()].copy_from_slice(&patched_bytes);
+                                                        result.errors.push(format!(
+                                                            "{}: contextual scan applied in {} — offset 0x{:X} to 0x{:X} (delta: {}, {}B context)",
+                                                            mod_name, bare_filename, offset, pp,
+                                                            if pp >= offset { format!("+{}", pp - offset) }
+                                                            else { format!("-{}", offset - pp) },
+                                                            smaller_ctx * 2 + orig_bytes.len()
+                                                        ));
+                                                        applied = true;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                            if !applied {
+                                                log::info!("{}: contextual scan failed in {} at 0x{:X} — no unique context found", mod_name, bare_filename, offset);
+                                            }
+                                        }
+                                    }
+                                }
+                                continue;
+                            }
+
                             if current == orig_bytes.as_slice() {
                                 // Original bytes match at expected offset — patch normally
                                 flat_data[offset..offset + patched_bytes.len()].copy_from_slice(&patched_bytes);
@@ -1745,6 +2216,10 @@ pub fn apply_mods(
                     }
 
                     // No original bytes provided — patch directly at offset
+                    // Skip on structural mods: offsets don't correspond to the same data
+                    if require_unique_patterns {
+                        continue;
+                    }
                     flat_data[offset..offset + patched_bytes.len()].copy_from_slice(&patched_bytes);
                 }
                 // Track unique mod names applied
@@ -1753,14 +2228,27 @@ pub fn apply_mods(
                 }
             }
 
-            // LZ4 compress the patched data
-            let compressed = lz4::block::compress(&flat_data, None, false)
+            // If a standalone overlay provided this file, remove its original entry
+            // since the patched version (with uniqueness-checked pattern scan) supersedes it
+            let final_data = if let Some(&(_, _, _, _, old_idx)) = standalone_file_map.get(&bare_filename.to_lowercase()) {
+                overlay_files.remove(old_idx);
+                for val in standalone_file_map.values_mut() {
+                    if val.4 > old_idx { val.4 -= 1; }
+                }
+                log::info!("Standalone overlay entry for {} replaced with patched version", bare_filename);
+                flat_data
+            } else {
+                flat_data
+            };
+
+            // LZ4 compress the final data
+            let compressed = lz4::block::compress(&final_data, None, false)
                 .map_err(|e| format!("LZ4 compression failed for {}: {}", bare_filename, e))?;
 
             // Record the PAZ offset before padding
             let paz_offset = paz_data.len() as u32;
             let comp_size = compressed.len() as u32;
-            let decomp_size = flat_data.len() as u32;
+            let decomp_size = final_data.len() as u32;
 
             // Append compressed data to PAZ, padded to 16-byte alignment
             paz_data.extend_from_slice(&compressed);
@@ -1793,6 +2281,11 @@ pub fn apply_mods(
         for (_key, (dir_path, filename, raw_data)) in &deduped_browser {
             // Skip if this file was already built by the pabgb byte-patch pipeline
             if pabgb_filenames.contains(&filename.to_lowercase()) {
+                continue;
+            }
+
+            // Skip if this file was already three-way merged with a standalone overlay
+            if merged_browser_files.contains(&filename.to_lowercase()) {
                 continue;
             }
 
@@ -2418,25 +2911,6 @@ pub fn get_app_dir() -> Result<String, String> {
     let dir = exe.parent()
         .ok_or_else(|| "Failed to get exe directory".to_string())?;
     Ok(dir.to_string_lossy().to_string())
-}
-
-#[tauri::command]
-pub fn get_nexus_api_key() -> Result<String, String> {
-    // Try loading from nexus_api_key.txt next to the exe
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let key_file = dir.join("nexus_api_key.txt");
-            if key_file.exists() {
-                if let Ok(key) = fs::read_to_string(&key_file) {
-                    let key = key.trim().to_string();
-                    if !key.is_empty() {
-                        return Ok(key);
-                    }
-                }
-            }
-        }
-    }
-    Ok(String::new())
 }
 
 #[tauri::command]
@@ -3645,148 +4119,6 @@ pub fn read_mod_readme(
 }
 
 // =============================================================================
-// 4. Nexus Folder Import
-// =============================================================================
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct NexusFolder {
-    pub folder_name: String,
-    pub mod_name: String,
-    pub has_json: bool,
-    pub has_readme: bool,
-}
-
-#[tauri::command]
-pub fn scan_nexus_folders(mods_path: String) -> Result<Vec<NexusFolder>, String> {
-    let mods_dir = Path::new(&mods_path);
-    if !mods_dir.exists() {
-        return Err("Mods directory does not exist".to_string());
-    }
-
-    let mut folders = Vec::new();
-    let entries = fs::read_dir(mods_dir)
-        .map_err(|e| format!("Failed to read mods directory: {}", e))?;
-
-    for entry in entries {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        let path = entry.path();
-
-        if !path.is_dir() {
-            continue;
-        }
-
-        let folder_name = match path.file_name().and_then(|n| n.to_str()) {
-            Some(n) => n.to_string(),
-            None => continue,
-        };
-
-        // Match Nexus format: ModName-123-1-timestamp
-        // Pattern: contains at least one hyphen followed by digits
-        if !is_nexus_folder_name(&folder_name) {
-            continue;
-        }
-
-        // Extract the mod name (everything before the first hyphen-digit sequence)
-        let mod_name = extract_nexus_mod_name(&folder_name);
-
-        // Check for JSON files (excluding modinfo.json)
-        let has_json = fs::read_dir(&path)
-            .map(|entries| {
-                entries.filter_map(|e| e.ok()).any(|e| {
-                    let name = e.file_name().to_string_lossy().to_string();
-                    name.ends_with(".json") && name.to_lowercase() != "modinfo.json"
-                })
-            })
-            .unwrap_or(false);
-
-        let has_readme = path.join("readme.txt").exists()
-            || path.join("README.txt").exists()
-            || path.join("Readme.txt").exists();
-
-        folders.push(NexusFolder {
-            folder_name,
-            mod_name,
-            has_json,
-            has_readme,
-        });
-    }
-
-    folders.sort_by(|a, b| a.mod_name.to_lowercase().cmp(&b.mod_name.to_lowercase()));
-    Ok(folders)
-}
-
-/// Check if a folder name matches the Nexus Mods naming pattern.
-/// Pattern: SomeName-<digits>-<digits>-<timestamp>
-fn is_nexus_folder_name(name: &str) -> bool {
-    let parts: Vec<&str> = name.split('-').collect();
-    if parts.len() < 3 {
-        return false;
-    }
-    // At least one part after the first must be purely numeric
-    parts[1..].iter().any(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
-}
-
-/// Extract the human-readable mod name from a Nexus folder name.
-/// e.g., "Cool Mod Name-123-1-1234567890" -> "Cool Mod Name"
-fn extract_nexus_mod_name(folder_name: &str) -> String {
-    let parts: Vec<&str> = folder_name.split('-').collect();
-    // Find the first part that is purely numeric -- everything before it is the name
-    let mut name_parts = Vec::new();
-    for part in &parts {
-        if !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()) {
-            break;
-        }
-        name_parts.push(*part);
-    }
-    if name_parts.is_empty() {
-        folder_name.to_string()
-    } else {
-        name_parts.join("-")
-    }
-}
-
-#[tauri::command]
-pub fn import_nexus_folder(
-    mods_path: String,
-    folder_name: String,
-) -> Result<Vec<String>, String> {
-    let mods_dir = Path::new(&mods_path);
-    let folder_path = mods_dir.join(&folder_name);
-
-    if !folder_path.exists() || !folder_path.is_dir() {
-        return Err(format!("Nexus folder not found: {}", folder_name));
-    }
-
-    let mut imported = Vec::new();
-    let entries = fs::read_dir(&folder_path)
-        .map_err(|e| format!("Failed to read Nexus folder: {}", e))?;
-
-    for entry in entries {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
-        let file_name = entry.file_name().to_string_lossy().to_string();
-
-        // Copy .json files (excluding modinfo.json) to mods root
-        if file_name.ends_with(".json") && file_name.to_lowercase() != "modinfo.json" {
-            let source = entry.path();
-            let dest = mods_dir.join(&file_name);
-
-            fs::copy(&source, &dest)
-                .map_err(|e| format!("Failed to copy {}: {}", file_name, e))?;
-            imported.push(file_name);
-        }
-    }
-
-    Ok(imported)
-}
-
-// =============================================================================
 // 5. Export/Import Mod List
 // =============================================================================
 
@@ -4516,177 +4848,6 @@ pub fn detailed_check(
     })
 }
 
-// =============================================================================
-// Nexus Mods API Integration
-// =============================================================================
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct NexusIdMapping {
-    pub file_name: String,
-    pub nexus_mod_id: u64,
-    pub folder_name: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ModUpdateStatus {
-    pub file_name: String,
-    pub nexus_mod_id: Option<u64>,
-    pub local_version: String,
-    pub nexus_version: Option<String>,
-    pub is_outdated: bool,
-    pub nexus_url: Option<String>,
-    pub error: Option<String>,
-}
-
-/// Scan the mods directory for Nexus-style folder names (Name-{modId}-{fileVersion}-{timestamp})
-/// and match them to mod JSON files by comparing folder name prefixes.
-#[tauri::command]
-pub fn parse_nexus_mod_ids(mods_path: String) -> Result<Vec<NexusIdMapping>, String> {
-    let mods_dir = Path::new(&mods_path);
-    if !mods_dir.exists() {
-        return Err("Mods directory does not exist".to_string());
-    }
-
-    let mut mappings: Vec<NexusIdMapping> = Vec::new();
-
-    // Collect all JSON mod files in the mods directory
-    let json_files: Vec<String> = fs::read_dir(mods_dir)
-        .map_err(|e| format!("Failed to read mods directory: {}", e))?
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry.path().extension()
-                .map(|ext| ext.to_string_lossy().to_lowercase() == "json")
-                .unwrap_or(false)
-        })
-        .filter_map(|entry| entry.file_name().to_str().map(String::from))
-        .collect();
-
-    // Scan for Nexus-style subdirectories
-    let entries = fs::read_dir(mods_dir)
-        .map_err(|e| format!("Failed to read mods directory: {}", e))?;
-
-    for entry in entries.filter_map(|e| e.ok()) {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-
-        let folder_name = match path.file_name().and_then(|n| n.to_str()) {
-            Some(name) => name.to_string(),
-            None => continue,
-        };
-
-        // Match pattern: Name-{digits}-{digits}-{digits}
-        // The mod ID is the second group from the end (second-to-last number)
-        let parts: Vec<&str> = folder_name.rsplitn(4, '-').collect();
-        if parts.len() < 4 {
-            continue;
-        }
-
-        // parts[0] = timestamp, parts[1] = file version, parts[2] = mod id, parts[3] = name prefix
-        let timestamp_ok = parts[0].chars().all(|c| c.is_ascii_digit()) && !parts[0].is_empty();
-        let version_ok = parts[1].chars().all(|c| c.is_ascii_digit()) && !parts[1].is_empty();
-        let mod_id_str = parts[2];
-        let mod_id_ok = mod_id_str.chars().all(|c| c.is_ascii_digit()) && !mod_id_str.is_empty();
-
-        if !timestamp_ok || !version_ok || !mod_id_ok {
-            continue;
-        }
-
-        let mod_id: u64 = match mod_id_str.parse() {
-            Ok(id) => id,
-            Err(_) => continue,
-        };
-
-        // Try to match this folder to a JSON file
-        // The folder name prefix (before the numbers) should loosely match a JSON filename
-        let name_prefix = parts[3].to_lowercase().replace(' ', "").replace('_', "");
-
-        let mut matched_file: Option<String> = None;
-
-        // First: check if there's a JSON file inside the folder itself
-        if let Ok(folder_entries) = fs::read_dir(&path) {
-            for fe in folder_entries.filter_map(|e| e.ok()) {
-                let fe_path = fe.path();
-                if fe_path.extension().map(|ext| ext.to_string_lossy().to_lowercase() == "json").unwrap_or(false) {
-                    if let Some(fname) = fe_path.file_name().and_then(|n| n.to_str()) {
-                        matched_file = Some(fname.to_string());
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Second: try matching against root-level JSON files by name similarity
-        if matched_file.is_none() {
-            for json_file in &json_files {
-                let json_stem = json_file.trim_end_matches(".json").to_lowercase().replace(' ', "").replace('_', "");
-                if json_stem.contains(&name_prefix) || name_prefix.contains(&json_stem) {
-                    matched_file = Some(json_file.clone());
-                    break;
-                }
-            }
-        }
-
-        if let Some(file_name) = matched_file {
-            mappings.push(NexusIdMapping {
-                file_name,
-                nexus_mod_id: mod_id,
-                folder_name: folder_name.clone(),
-            });
-        }
-    }
-
-    Ok(mappings)
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct NexusCacheEntry {
-    pub file_name: String,
-    pub nexus_mod_id: u64,
-    pub nexus_name: String,
-    pub last_checked: String,
-}
-
-fn load_nexus_cache_internal(_mods_path: &str) -> Vec<NexusCacheEntry> {
-    Vec::new()
-}
-
-/// Check for mod updates — network calls removed for Nexus compliance.
-/// Returns empty results since online checking is disabled.
-#[tauri::command]
-pub fn check_mod_updates(
-    _api_key: String,
-    _mod_ids: Vec<NexusIdMapping>,
-    _mods_path: String,
-) -> Result<Vec<ModUpdateStatus>, String> {
-    // Network calls removed — update checking disabled for Nexus Mods compliance
-    Ok(Vec::new())
-}
-
-#[tauri::command]
-pub fn search_nexus_by_name(
-    _api_key: String,
-    _mod_name: String,
-    _mods_path: String,
-) -> Result<Option<NexusCacheEntry>, String> {
-    Ok(None)
-}
-
-#[tauri::command]
-pub fn search_all_unmatched_mods(
-    _api_key: String,
-    _mods_path: String,
-    _known_mappings: Vec<NexusIdMapping>,
-) -> Result<Vec<NexusIdMapping>, String> {
-    Ok(Vec::new())
-}
-
-
-#[tauri::command]
-pub fn load_nexus_cache(mods_path: String) -> Result<Vec<NexusCacheEntry>, String> {
-    Ok(load_nexus_cache_internal(&mods_path))
-}
 
 // ─── ReShade Support ───────────────────────────────────────────────────────────
 
@@ -5820,22 +5981,6 @@ pub fn get_compatibility_matrix(mods_path: String) -> Result<Vec<CompatEntry>, S
 }
 
 // =============================================================================
-// Nexus Mod Thumbnail Fetching
-// =============================================================================
-
-#[tauri::command]
-pub fn fetch_mod_thumbnail(_nexus_mod_id: u64, _api_key: String, cache_dir: String) -> Result<String, String> {
-    // Return cached thumbnail if it exists, but don't fetch new ones (no network calls)
-    let thumbs_dir = Path::new(&cache_dir).join("thumbs");
-    let cached_path = thumbs_dir.join(format!("{}.jpg", _nexus_mod_id));
-    if cached_path.exists() {
-        return Ok(cached_path.to_string_lossy().to_string());
-    }
-    Err("Thumbnail fetching disabled (offline mode)".to_string())
-}
-
-
-// =============================================================================
 // Texture Mods (PATHC / DDS Support)
 // =============================================================================
 
@@ -6638,6 +6783,47 @@ pub fn scan_browser_mods(mods_path: String) -> Result<Vec<BrowserModEntry>, Stri
         }
         if found_manifest { continue; }
 
+        // --- Case 1b: files/ directory without manifest ---
+        // Some mods ship files/NNNN/path/to/file without manifest.json
+        {
+            let files_dir = path.join("files");
+            if files_dir.exists() && files_dir.is_dir() {
+                let mut file_count = 0usize;
+                let mut has_game_files = false;
+                if let Ok(rd) = fs::read_dir(&files_dir) {
+                    for sub in rd.filter_map(|e| e.ok()) {
+                        let sub_name = sub.file_name().to_string_lossy().to_string();
+                        if sub.path().is_dir() && is_paz_group_dir(&sub_name) {
+                            let count = count_files_recursive(&sub.path());
+                            if count > 0 {
+                                has_game_files = true;
+                                file_count += count;
+                            }
+                        }
+                    }
+                }
+                if has_game_files {
+                    let modinfo_path = path.join("modinfo.json");
+                    let (title, version, author, description) = read_modinfo(&modinfo_path, &folder_name);
+
+                    if !seen_folders.contains(&folder_name) {
+                        seen_folders.insert(folder_name.clone());
+                        entries.push(BrowserModEntry {
+                            folder_name: folder_name.clone(),
+                            title,
+                            author,
+                            version,
+                            description,
+                            file_count,
+                            enabled: false,
+                            mod_type: "file replace".to_string(),
+                        });
+                    }
+                    continue;
+                }
+            }
+        }
+
         // --- Case 2: Auto-detect loose folder with numbered PAZ group subdirs ---
         if seen_folders.contains(&folder_name) { continue; }
 
@@ -6953,7 +7139,6 @@ pub struct CommunityProfileMod {
     pub title: String,
     pub version: String,
     pub file_name: String,
-    pub nexus_url: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -6973,7 +7158,6 @@ pub fn export_community_profile(
     description: String,
     mods_path: String,
     active_mods: Vec<ActiveMod>,
-    update_statuses: HashMap<String, ModUpdateStatus>,
 ) -> Result<String, String> {
     let mods_dir = Path::new(&mods_path);
     let mut profile_mods = Vec::new();
@@ -6987,14 +7171,10 @@ pub fn export_community_profile(
         let mod_file = parse_mod_file(&mod_path)?;
         let (title, version, _author, _desc) = get_mod_display_info(&mod_file);
 
-        let nexus_url = update_statuses.get(&am.file_name)
-            .and_then(|s| s.nexus_url.clone());
-
         profile_mods.push(CommunityProfileMod {
             title,
             version,
             file_name: am.file_name.clone(),
-            nexus_url,
         });
     }
 
@@ -7183,45 +7363,3 @@ pub fn restore_vanilla(game_path: String, backup_dir: String) -> Result<Vec<Stri
     Ok(messages)
 }
 
-#[tauri::command]
-pub fn download_and_apply_update(download_url: String) -> Result<(), String> {
-    let exe = std::env::current_exe()
-        .map_err(|e| format!("Failed to get exe path: {}", e))?;
-    let exe_dir = exe.parent()
-        .ok_or_else(|| "Failed to get exe directory".to_string())?;
-    let new_exe = exe_dir.join("definitive-mod-manager.exe.update");
-
-    // Download the new exe
-    let response = reqwest::blocking::get(&download_url)
-        .map_err(|e| format!("Download failed: {}", e))?;
-    if !response.status().is_success() {
-        return Err(format!("Download failed with status: {}", response.status()));
-    }
-    let bytes = response.bytes()
-        .map_err(|e| format!("Failed to read download: {}", e))?;
-    fs::write(&new_exe, &bytes)
-        .map_err(|e| format!("Failed to save update: {}", e))?;
-
-    // Create a batch script to replace the exe after we exit
-    let bat_path = exe_dir.join("_update.bat");
-    let exe_str = exe.to_string_lossy();
-    let new_exe_str = new_exe.to_string_lossy();
-    let script = format!(
-        "@echo off\r\n\
-         timeout /t 2 /nobreak >nul\r\n\
-         del \"{exe_str}\"\r\n\
-         move \"{new_exe_str}\" \"{exe_str}\"\r\n\
-         start \"\" \"{exe_str}\"\r\n\
-         del \"%~f0\"\r\n"
-    );
-    fs::write(&bat_path, &script)
-        .map_err(|e| format!("Failed to create update script: {}", e))?;
-
-    // Launch the batch script detached
-    std::process::Command::new("cmd")
-        .args(["/C", "start", "/min", "", &bat_path.to_string_lossy()])
-        .spawn()
-        .map_err(|e| format!("Failed to launch updater: {}", e))?;
-
-    Ok(())
-}
