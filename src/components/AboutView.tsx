@@ -71,6 +71,17 @@ const features = [
 
 const changelog = [
   {
+    version: "1.0.6b",
+    date: "April 2026",
+    title: "Security Hotfix",
+    changes: [
+      "Fixed ZIP Slip vulnerability — malicious ZIP archives can no longer write files outside the mods directory",
+      "Fixed path traversal in backup restore — backup filenames are validated to stay within the game directory",
+      "Added LZ4 decompression bomb protection — files claiming to decompress to over 100MB are rejected",
+      "Enabled Content Security Policy (CSP) — prevents script injection in the app window",
+    ],
+  },
+  {
     version: "1.0.6",
     date: "April 2026",
     title: "Multi-Overlay Architecture, Standalone Mod Fix & Auto-Cleanup",

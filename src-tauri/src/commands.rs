@@ -871,6 +871,10 @@ fn extract_from_paz(game_path: &str, group_id: &str, rec: &PamtFileRecord, filen
 
     // Decompress if sizes differ
     if rec.comp_size != rec.decomp_size {
+        // Cap decompressed size at 100MB to prevent decompression bombs
+        if rec.decomp_size > 100 * 1024 * 1024 {
+            return Err(format!("Decompressed size too large for '{}': {} bytes", filename, rec.decomp_size));
+        }
         let decompressed = lz4::block::decompress(&raw, Some(rec.decomp_size as i32))
             .map_err(|e| format!("LZ4 decompression failed for '{}': {}", filename, e))?;
         Ok(decompressed)
@@ -2695,6 +2699,8 @@ fn import_zip(archive_path: &str, mods_path: &str) -> Result<Vec<String>, String
         .map_err(|e| format!("Failed to read ZIP: {}", e))?;
 
     let mods_dir = Path::new(mods_path);
+    let canonical_mods = fs::canonicalize(mods_dir)
+        .map_err(|e| format!("Failed to resolve mods path: {}", e))?;
     let mut imported = Vec::new();
 
     for i in 0..archive.len() {
@@ -2703,12 +2709,36 @@ fn import_zip(archive_path: &str, mods_path: &str) -> Result<Vec<String>, String
 
         let name = file.name().to_string();
 
+        // Reject path traversal attempts
+        if name.contains("..") {
+            log::warn!("ZIP Slip blocked: {}", name);
+            continue;
+        }
+
+        let dest = mods_dir.join(&name);
+
+        // Verify the resolved path stays inside the mods directory
+        // Use the parent for non-existent files since canonicalize needs the file to exist
+        let check_path = if dest.exists() {
+            fs::canonicalize(&dest).ok()
+        } else if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).ok();
+            fs::canonicalize(parent).ok().map(|p| p.join(dest.file_name().unwrap_or_default()))
+        } else {
+            None
+        };
+
+        if let Some(resolved) = check_path {
+            if !resolved.starts_with(&canonical_mods) {
+                log::warn!("ZIP Slip blocked (resolved outside mods): {}", name);
+                continue;
+            }
+        }
+
         if file.is_dir() {
-            let dest = mods_dir.join(&name);
             fs::create_dir_all(&dest)
                 .map_err(|e| format!("Failed to create dir {}: {}", name, e))?;
         } else {
-            let dest = mods_dir.join(&name);
             if let Some(parent) = dest.parent() {
                 fs::create_dir_all(parent)
                     .map_err(|e| format!("Failed to create parent dir: {}", e))?;
@@ -3688,6 +3718,11 @@ pub fn restore_single_backup(
         return Err(format!("Backup file not found: {}", file_name));
     }
 
+    // Reject path traversal in backup filename
+    if file_name.contains("..") {
+        return Err("Invalid backup filename".to_string());
+    }
+
     // Derive the game file path from the backup file name
     let game_file = file_name
         .trim_end_matches(".original")
@@ -3695,12 +3730,20 @@ pub fn restore_single_backup(
 
     let target = Path::new(&game_path).join(&game_file);
 
+    // Verify target stays inside game directory
+    let canonical_game = fs::canonicalize(game_path)
+        .map_err(|e| format!("Failed to resolve game path: {}", e))?;
     if let Some(parent) = target.parent() {
         if !parent.exists() {
             return Err(format!(
                 "Game directory does not exist: {}",
                 parent.display()
             ));
+        }
+        let canonical_parent = fs::canonicalize(parent)
+            .map_err(|e| format!("Failed to resolve target path: {}", e))?;
+        if !canonical_parent.starts_with(&canonical_game) {
+            return Err("Path traversal detected in backup restore".to_string());
         }
     }
 
